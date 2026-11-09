@@ -1,9 +1,12 @@
-"""Show a downloaded file in the notebook.
+"""Turn a downloaded file into HTML for the explorer's preview pane.
+
+Everything here returns an HTML string that the explorer puts into a widget
+inside its own window. That works the same in Colab and Jupyter, unlike
+printing or `display()` from a click handler, which Colab may not show.
 
 Text files (txt, json, md, csv, yaml, ...) are shown as you'd expect: JSON
 pretty-printed, Markdown rendered, CSV as a table, everything else as plain
-text. NumPy archives and other binary files are only downloaded for now; the
-preview says where the file was saved.
+text. NumPy archives and other binary files are only downloaded for now.
 """
 
 from __future__ import annotations
@@ -11,11 +14,6 @@ from __future__ import annotations
 import html
 import json
 from pathlib import Path
-from typing import List, Optional
-
-from IPython.display import HTML, Markdown
-
-from .hub import Entry
 
 MAX_CHARS = 100_000  # longest text shown; the rest is cut with a note
 CSV_ROWS = 200  # rows of a CSV shown as a table
@@ -32,16 +30,6 @@ BINARY = {
     ".tif", ".tiff", ".png", ".jpg", ".jpeg", ".zip", ".gz", ".zst", ".tar",
     ".nc", ".h5", ".hdf5", ".parquet", ".pt", ".pth", ".bin",
 } | NUMPY
-
-_BOX = (
-    "max-width:980px;margin:6px 0;padding:10px 12px;border:1px solid #d9d9de;"
-    "border-radius:8px;background:#f7f7f9;color:#1d1d1f;"
-)
-_PRE = (
-    _BOX + "max-height:480px;overflow:auto;white-space:pre-wrap;word-break:break-word;"
-    "font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;"
-)
-_NOTE = "font:12px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#6e6e73;"
 
 
 def suffix(path: Path) -> str:
@@ -83,48 +71,59 @@ def file_kind(path: Path) -> str:
     return "text" if looks_like_text(path) else "binary"
 
 
-def render(path: Path, entry: Optional[Entry] = None) -> List[object]:
-    """Displayable objects for a file: a header line, then its contents."""
+def to_html(path: Path) -> str:
+    """HTML showing the contents of a downloaded file."""
     path = Path(path)
     kind = file_kind(path)
-    items: List[object] = [_header(path, entry)]
     if kind == "numpy":
-        items.append(_note(
-            "NumPy archive saved. No preview yet. Load it with "
-            f"<code>np.load({html.escape(repr(str(path)))})</code>."
-        ))
-    elif kind == "binary":
+        return note(
+            "NumPy archive saved. No preview yet.<br>Load it with "
+            f"<code>np.load({html.escape(repr(str(path)))})</code>",
+            card=True,
+        )
+    if kind == "binary":
         what = f"{html.escape(suffix(path))} files" if suffix(path) else "this file type"
-        items.append(_note(f"Saved. No preview for {what} yet."))
-    elif kind == "table":
-        items.extend(_table(path))
-    elif kind == "json":
-        items.extend(_json(path))
-    elif kind == "markdown":
-        text, cut = _read_text(path)
-        items.append(Markdown(_front_matter_as_code(text)))
-        if cut:
-            items.append(_note(cut))
-    else:
-        items.extend(_text(*_read_text(path)))
-    return items
+        return note(f"Saved. No preview for {what} yet.", card=True)
+    if kind == "table":
+        return _table(path)
+    if kind == "json":
+        return _json(path)
+    text, cut = _read_text(path)
+    if kind == "markdown":
+        return f'<div class="fx-md">{markdown_to_html(text)}</div>' + _cut_note(cut)
+    return _pre(text) + _cut_note(cut)
 
 
-def _header(path: Path, entry: Optional[Entry]) -> HTML:
-    from .explorer import format_size, icon_and_kind
-
-    name = entry.name if entry else path.name
-    size = entry.size if entry and entry.size is not None else path.stat().st_size
-    icon = icon_and_kind(entry)[0] if entry else "📄"
-    return HTML(
-        f'<div style="{_NOTE}margin-top:8px">{icon} <b style="color:inherit">'
-        f"{html.escape(name)}</b> · {format_size(size)} · saved at "
-        f"<code>{html.escape(str(path))}</code></div>"
-    )
+def note(message: str, card: bool = False, error: bool = False) -> str:
+    """A short message (already HTML) for the preview pane."""
+    classes = "fx-note" + (" fx-card" if card else "") + (" fx-note-error" if error else "")
+    return f'<div class="{classes}">{message}</div>'
 
 
-def _note(message: str) -> HTML:
-    return HTML(f'<div style="{_BOX}{_NOTE}">{message}</div>')
+def markdown_to_html(text: str) -> str:
+    """Render Markdown with whichever library is installed (Colab has `markdown`)."""
+    text = _front_matter_as_code(text)
+    try:
+        import markdown
+
+        return markdown.markdown(text, extensions=["fenced_code", "tables"])
+    except ImportError:
+        pass
+    try:
+        import mistune
+
+        render = getattr(mistune, "html", None) or mistune.markdown
+        return render(text)
+    except ImportError:
+        return _pre(text)
+
+
+def _pre(text: str) -> str:
+    return f'<pre class="fx-code">{html.escape(text, quote=False)}</pre>'
+
+
+def _cut_note(cut: str) -> str:
+    return note(cut) if cut else ""
 
 
 def _read_text(path: Path):
@@ -137,14 +136,7 @@ def _read_text(path: Path):
     return text[:MAX_CHARS], f"Showing the first {MAX_CHARS:,} characters of {total:,} bytes."
 
 
-def _text(text: str, cut: str = "") -> List[object]:
-    items: List[object] = [HTML(f'<pre style="{_PRE}">{html.escape(text, quote=False)}</pre>')]
-    if cut:
-        items.append(_note(cut))
-    return items
-
-
-def _json(path: Path) -> List[object]:
+def _json(path: Path) -> str:
     if path.stat().st_size <= JSON_PARSE_LIMIT:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -152,24 +144,26 @@ def _json(path: Path) -> List[object]:
             pass  # not valid JSON: show it as it is
         else:
             text = json.dumps(data, indent=2, ensure_ascii=False)
-            cut = ""
             if len(text) > MAX_CHARS:
-                text, cut = text[:MAX_CHARS], f"Showing the first {MAX_CHARS:,} characters."
-            return _text(text, cut)
-    return _text(*_read_text(path))
+                return _pre(text[:MAX_CHARS]) + note(f"Showing the first {MAX_CHARS:,} characters.")
+            return _pre(text)
+    text, cut = _read_text(path)
+    return _pre(text) + _cut_note(cut)
 
 
-def _table(path: Path) -> List[object]:
+def _table(path: Path) -> str:
     try:
         import pandas as pd
 
         sep = "\t" if suffix(path) == ".tsv" else ","
         frame = pd.read_csv(path, sep=sep, nrows=CSV_ROWS + 1)
     except Exception:  # no pandas, or not really a table
-        return _text(*_read_text(path))
-    if len(frame) <= CSV_ROWS:
-        return [frame]
-    return [frame.head(CSV_ROWS), _note(f"Showing the first {CSV_ROWS} rows.")]
+        text, cut = _read_text(path)
+        return _pre(text) + _cut_note(cut)
+    more = len(frame) > CSV_ROWS
+    table = frame.head(CSV_ROWS).to_html(index=False, border=0, classes="fx-table")
+    rows = f"Showing the first {CSV_ROWS} rows." if more else f"{len(frame)} rows."
+    return f'<div class="fx-table-wrap">{table}</div>' + note(rows)
 
 
 def _front_matter_as_code(text: str) -> str:

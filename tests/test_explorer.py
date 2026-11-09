@@ -217,14 +217,49 @@ def test_saved_files_are_marked_in_a_new_explorer(explorer, api, mirror):
     assert "✓" not in meta(again, "roi")  # folders never get the mark
 
 
-def test_open_shows_text_and_only_saves_npz(explorer):
+def pane(explorer):
+    """What the preview pane shows: title, path line, body (or None if hidden)."""
+    if explorer._preview.layout.display == "none":
+        return None
+    return (explorer._preview_title.value, explorer._preview_path.value,
+            explorer._preview_body.value)
+
+
+def test_preview_starts_hidden_and_closes(explorer):
+    assert pane(explorer) is None
     click(explorer, "alpha")
-    readme = explorer.entries[-1]
-    items = explorer._open_items(readme)
-    assert "README.md" in items[0].data and "# Alpha" in items[1].data
+    click(explorer, "README.md")
+    assert pane(explorer) is not None
+    explorer._preview.children[0].children[1].click()  # the ✕ button
+    assert pane(explorer) is None
+
+
+def test_clicked_text_shows_in_the_window(explorer, mirror):
+    click(explorer, "alpha")
+    click(explorer, "README.md")
+    title, where, body = pane(explorer)
+    assert "README.md" in title and "6.9 KB" in title and "Markdown" in title
+    assert "Saved at" in where and str(mirror.resolve() / "me" / "alpha" / "README.md") in where
+    assert "<h1>Alpha</h1>" in body and "Fire data." in body
+    click(explorer, "roi")
+    click(explorer, "fire_all.csv")
+    title, _, body = pane(explorer)
+    assert "fire_all.csv" in title and 'class="dataframe fx-table"' in body
+    assert "<td>2017</td>" in body and "2 rows." in body
+
+
+def test_clicked_npz_is_only_saved(explorer):
+    click(explorer, "alpha")
     click(explorer, "train")
-    items = explorer._open_items(explorer.entries[0])
-    assert "No preview yet" in items[1].data and "np.load(" in items[1].data
+    click(explorer, "p1.npz")
+    _, where, body = pane(explorer)
+    assert "No preview yet" in body and "np.load(" in body and "Saved at" in where
+
+
+def test_open_file_returns_the_path(explorer, mirror):
+    click(explorer, "alpha")
+    path = explorer.open_file(explorer.entries[-1])
+    assert path == mirror.resolve() / "me" / "alpha" / "README.md" and path.is_file()
 
 
 def test_open_files_can_be_turned_off(api, mirror):
@@ -242,20 +277,24 @@ def test_big_files_ask_first(api, mirror):
                                confirm_size=3000)
     click(explorer, "alpha")
     click(explorer, "train")
-    big = explorer.entries[3]  # p4.npz, 4000 bytes
-    question = explorer._open_items(big)[0]
-    assert "4.0 KB" in question.children[0].value
+    click(explorer, "p4.npz")  # 4000 bytes
+    title, where, body = pane(explorer)
+    assert "is 4.0 KB" in body and "Saves to" in where
+    assert explorer._preview_ask.layout.display == ""
     assert downloads(api) == []
-    question.children[1].click()
+    explorer._download_btn.click()
     assert downloads(api) == ["train/p4.npz"]
-    assert explorer._open_items(big)[0].data.count("p4.npz")  # saved now: no question
+    assert "No preview yet" in pane(explorer)[2]
+    assert explorer._preview_ask.layout.display == "none"
+    click(explorer, "p4.npz")  # saved now: opens without asking
+    assert "No preview yet" in pane(explorer)[2] and downloads(api) == ["train/p4.npz"]
 
 
 def test_failed_download_reports_error(explorer, api):
     api.download_error = PermissionError("Access to dataset is restricted")
     click(explorer, "alpha")
-    items = explorer._open_items(explorer.entries[-1])
-    assert "Access to dataset is restricted" in items[0].value
+    assert explorer.open_file(explorer.entries[-1]) is None
+    assert "Access to dataset is restricted" in pane(explorer)[2]
     assert "fx-error" in explorer._status._dom_classes
 
 
@@ -294,15 +333,14 @@ def test_open_explorer_shows_window_before_loading(monkeypatch, mirror):
 def test_unreadable_file_reports_error(explorer, monkeypatch):
     import firevis.explorer as module
 
-    def broken(path, entry):
+    def broken(path):
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
-    monkeypatch.setattr(module.viewers, "render", broken)
+    monkeypatch.setattr(module.viewers, "to_html", broken)
     click(explorer, "alpha")
-    items = explorer._open_items(explorer.entries[-1])
-    assert "Saved, but couldn't show" in items[0].value
+    click(explorer, "README.md")
+    assert "Saved, but couldn't show" in pane(explorer)[2]
     assert "fx-error" in explorer._status._dom_classes
-    explorer.open_file(explorer.entries[-1])  # used to crash and leave a blank area
 
 
 def test_gated_dataset_gets_a_hint(explorer, api):
@@ -311,6 +349,6 @@ def test_gated_dataset_gets_a_hint(explorer, api):
 
     api.download_error = GatedRepoError("401 Client Error")
     click(explorer, "alpha")
-    items = explorer._open_items(explorer.entries[-1])
-    assert "401 Client Error" in items[0].value
-    assert "is gated" in items[1].data and "HF_TOKEN" in items[1].data
+    click(explorer, "README.md")
+    body = pane(explorer)[2]
+    assert "401 Client Error" in body and "is gated" in body and "HF_TOKEN" in body

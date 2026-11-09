@@ -7,11 +7,12 @@ Every file and folder name loads when the explorer opens, so browsing needs no
 further requests. Clicking a folder opens it. Clicking a file opens it: the
 first time, it is downloaded into a local mirror of the Hub layout
 (`hf_mirror/<owner>/<dataset>/<path>`); later clicks use that saved copy. Text
-files (txt, json, md, csv, ...) are shown under the window; NumPy archives and
-other binary files are only saved for now. Files over 1 GB ask first.
+files (txt, json, md, csv, ...) are shown in a preview pane inside the window;
+NumPy archives and other binary files are only saved for now. Files over 1 GB
+ask first.
 
 Functions registered with `explorer.on_file_click(fn)` run after that, with the
-file's `Entry`; anything they print or plot also shows under the window.
+file's `Entry`; anything they print or plot shows under the window.
 """
 
 from __future__ import annotations
@@ -87,14 +88,14 @@ _CSS = """
   --fx-text: #1d1d1f; --fx-muted: #6e6e73; --fx-line: #d9d9de;
   --fx-chrome: #f3f3f5; --fx-side: #ececef; --fx-zebra: #f7f7f9;
   --fx-hover: #e7eefc; --fx-accent: #0a64d6; --fx-active: #dcdce2;
-  max-width: 980px; background: #fff; border: 1px solid var(--fx-line);
+  max-width: 1400px; background: #fff; border: 1px solid var(--fx-line);
   border-radius: 10px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.10);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 13px; color: var(--fx-text);
 }
 .fx-window .jupyter-widgets { margin: 0; }
 .fx-window .widget-html, .fx-window .widget-html-content {
-  height: auto; line-height: normal; min-width: 0;
+  height: auto; line-height: normal; min-width: 0; color: var(--fx-text);
 }
 .fx-window .jupyter-button {
   font-family: inherit; font-size: 13px; color: var(--fx-text) !important;
@@ -165,6 +166,47 @@ _CSS = """
 .fx-window .jupyter-button.fx-more { width: auto; color: var(--fx-accent) !important;
   margin: 6px auto !important; padding: 0 10px; }
 
+/* preview pane: right of the list, or below it when the window is narrow */
+.fx-body { flex-wrap: wrap; }
+.fx-main { flex: 1 1 380px; }
+.fx-preview { flex: 1 1 440px; min-width: 0; border-left: 1px solid var(--fx-line);
+  background: #fff; }
+.fx-preview-head, .fx-preview-path, .fx-preview-ask { flex: 0 0 auto; }
+.fx-preview-head { align-items: center; height: 34px; padding: 0 6px 0 12px;
+  background: var(--fx-chrome); border-bottom: 1px solid var(--fx-line); }
+.fx-preview-title { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.fx-preview-title span { font-weight: 400; color: var(--fx-muted); }
+.fx-preview-path { padding: 6px 12px; font-size: 11px; color: var(--fx-muted);
+  word-break: break-all; border-bottom: 1px solid var(--fx-line); }
+.fx-preview-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px 12px; }
+.fx-preview-ask { padding: 0 12px 12px; justify-content: center; }
+.fx-window .jupyter-button.fx-primary { width: auto; padding: 0 14px;
+  background: var(--fx-accent) !important; color: #fff !important; }
+.fx-code { margin: 0; padding: 8px 10px; background: var(--fx-zebra);
+  border: 1px solid var(--fx-line); border-radius: 6px; color: var(--fx-text);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word; }
+.fx-md { line-height: 1.55; }
+.fx-md h1 { font-size: 20px; margin: 4px 0 10px; }
+.fx-md h2 { font-size: 16px; margin: 16px 0 8px; }
+.fx-md h3, .fx-md h4 { font-size: 14px; margin: 14px 0 6px; }
+.fx-md p, .fx-md ul, .fx-md ol { margin: 0 0 10px; }
+.fx-md code { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--fx-zebra); padding: 1px 4px; border-radius: 4px; }
+.fx-md pre { margin: 0 0 10px; padding: 8px 10px; background: var(--fx-zebra);
+  border: 1px solid var(--fx-line); border-radius: 6px; white-space: pre-wrap; }
+.fx-md pre code { padding: 0; background: none; }
+.fx-md a { color: var(--fx-accent); }
+.fx-table-wrap { overflow-x: auto; }
+.fx-md table, .fx-table { border-collapse: collapse; font-size: 12px; }
+.fx-md th, .fx-md td, .fx-table th, .fx-table td { border: 1px solid var(--fx-line);
+  padding: 3px 8px; text-align: left; white-space: nowrap; }
+.fx-md th, .fx-table th { background: var(--fx-chrome); }
+.fx-note { margin: 8px 0; color: var(--fx-muted); font-size: 12px; }
+.fx-card { margin: 40px 16px; text-align: center; font-size: 13px; line-height: 1.6; }
+.fx-note-error { color: #c4314b; }
+
 /* status bar */
 .fx-status { height: 24px; line-height: 24px; padding: 0 12px; font-size: 12px;
   color: var(--fx-muted); background: var(--fx-chrome);
@@ -197,7 +239,7 @@ class DatasetExplorer:
     All file and folder names load once, up front, so browsing is instant.
     Clicking a file opens it: the first time, it is downloaded into the local
     mirror (`mirror_dir`); after that the saved copy is used. Text files are
-    shown under the window; other files are just saved for now.
+    shown in the window's preview pane; other files are just saved for now.
 
     root:          Hub link or user/org name whose datasets form the top level.
     source:        A `HubSource` (or anything with the same methods); defaults
@@ -205,7 +247,8 @@ class DatasetExplorer:
     mirror_dir:    Folder that downloaded files are saved into. Use a mounted
                    Google Drive folder to keep them across Colab runtimes.
     on_file_click: Optional function called with the `Entry` of a clicked file.
-    open_files:    Download and show files when clicked (default True).
+    open_files:    Download files and show them in the preview pane when
+                   clicked (default True).
     confirm_size:  Files bigger than this many bytes ask before downloading.
     height:        Height of the list area, in pixels.
     page_size:     Rows shown before a "Show more" button appears.
@@ -284,20 +327,49 @@ class DatasetExplorer:
         self._refresh_row(entry)
         return path
 
-    def open_file(self, entry: Optional[Entry] = None, confirmed: bool = False) -> None:
-        """Download a file if needed and show it under the window.
+    def open_file(self, entry: Optional[Entry] = None, confirmed: bool = False) -> Optional[Path]:
+        """Download a file if needed and show it in the preview pane.
 
-        Files over `confirm_size` show a Download button instead, unless
-        `confirmed` is True or they are already saved.
+        Returns the file's path in the mirror, or None if it couldn't be opened
+        or is waiting for the Download button. Files over `confirm_size` ask
+        first, unless `confirmed` is True or they are already saved.
         """
         entry = self._file(entry)
-        self.output.clear_output()
-        with self.output:  # download progress bars land here too
-            items = self._open_items(entry, confirmed)
-        self.output.clear_output()  # drop the progress bars
-        with self.output:
-            for item in items:
-                display(item)
+        too_big = entry.size is not None and entry.size > self.confirm_size
+        if too_big and not confirmed and not self.source.is_local(entry):
+            self._show_preview(entry, viewers.note(
+                f"<b>{_escape(entry.name)}</b> is {format_size(entry.size)}.<br>"
+                f"Download it into <code>{_escape(str(self.mirror_dir))}</code>?",
+                card=True,
+            ), ask=True)
+            return None
+        if not self.source.is_local(entry):
+            self._show_preview(entry, viewers.note(
+                f"Downloading {_escape(entry.name)} ({format_size(entry.size)})…", card=True))
+        try:
+            path = self.download(entry)
+        except Exception as error:  # gated dataset, no network, disk full...
+            body = self._error_html("Couldn't download", entry, error)
+            if type(error).__name__ == "GatedRepoError":
+                body += viewers.note(
+                    f"{_escape(entry.repo_id)} is gated: accept its terms at "
+                    f'<a href="https://huggingface.co/datasets/{entry.repo_id}" target="_blank">'
+                    f"{_escape(entry.repo_id)}</a>, "
+                    "then set an <code>HF_TOKEN</code> (in Colab: a secret) and reopen."
+                )
+            self._show_preview(entry, body)
+            return None
+        try:
+            body = viewers.to_html(path)
+        except Exception as error:  # unreadable file: say so instead of a blank pane
+            body = self._error_html("Saved, but couldn't show", entry, error)
+        self._show_preview(entry, body)
+        return path
+
+    def close_preview(self) -> None:
+        """Hide the preview pane."""
+        self._preview.layout.display = "none"
+        self._previewing = None
 
     def on_file_click(self, callback: FileCallback) -> FileCallback:
         """Register `callback(entry)` to run when a file is clicked.
@@ -403,7 +475,30 @@ class DatasetExplorer:
         main = widgets.VBox([header, self._list])
         main.add_class("fx-main")
 
-        body = widgets.HBox([self._sidebar, main])
+        # Preview pane: opened files are drawn here, inside the window.
+        self._preview_title = widgets.HTML()
+        self._preview_title.add_class("fx-preview-title")
+        close = _button("✕", "fx-tool", tooltip="Close preview")
+        close.on_click(lambda _: self.close_preview())
+        head = widgets.HBox([self._preview_title, close])
+        head.add_class("fx-preview-head")
+        self._preview_path = widgets.HTML()
+        self._preview_path.add_class("fx-preview-path")
+        self._preview_body = widgets.HTML()
+        self._preview_body.add_class("fx-preview-body")
+        self._download_btn = _button("Download", "fx-primary")
+        self._download_btn.on_click(lambda _: self.open_file(self._previewing, confirmed=True))
+        self._preview_ask = widgets.HBox([self._download_btn])
+        self._preview_ask.add_class("fx-preview-ask")
+        self._preview = widgets.VBox(
+            [head, self._preview_path, self._preview_body, self._preview_ask],
+            layout=widgets.Layout(height=f"{height + 27}px", display="none"),
+        )
+        self._preview.add_class("fx-preview")
+        self._previewing: Optional[Entry] = None
+
+        body = widgets.HBox([self._sidebar, main, self._preview])
+        body.add_class("fx-body")
         self._status = widgets.HTML()
         self._status.add_class("fx-status")
 
@@ -552,51 +647,32 @@ class DatasetExplorer:
         self._update_status()
         if self.open_files:
             self.open_file(entry)
-        else:
+        if self._callbacks:
             self.output.clear_output()
-        with self.output:
-            for callback in self._callbacks:
-                callback(entry)
+            with self.output:
+                for callback in self._callbacks:
+                    callback(entry)
 
-    def _open_items(self, entry: Entry, confirmed: bool = False) -> List[object]:
-        """What to show for a clicked file: its preview, a question, or an error."""
-        too_big = entry.size is not None and entry.size > self.confirm_size
-        if too_big and not confirmed and not self.source.is_local(entry):
-            return [self._confirm(entry)]
-        try:
-            path = self.download(entry)
-        except Exception as error:  # gated dataset, no network, disk full...
-            items = self._error("Couldn't download", entry, error)
-            if type(error).__name__ == "GatedRepoError":
-                items.append(viewers._note(
-                    f"{_escape(entry.repo_id)} is gated: accept its terms at "
-                    f'<a href="https://huggingface.co/datasets/{entry.repo_id}" target="_blank">'
-                    f"{_escape(entry.repo_id)}</a>, "
-                    "then set an <code>HF_TOKEN</code> (in Colab: a secret) and reopen."
-                ))
-            return items
-        try:
-            return viewers.render(path, entry)
-        except Exception as error:  # unreadable file: say so instead of a blank area
-            return self._error("Saved, but couldn't show", entry, error)
-
-    def _error(self, what: str, entry: Entry, error: Exception) -> List[object]:
-        self._set_status(f"⚠️ {what} {entry.name}: {error}", error=True)
-        return [widgets.HTML(
-            '<div style="max-width:980px;margin:6px 0;padding:10px 12px;'
-            'border:1px solid #f1c0c8;border-radius:8px;background:#fdf2f4;color:#c4314b">'
-            f"⚠️ {what} <b>{_escape(entry.name)}</b>: {_escape(str(error))}</div>"
-        )]
-
-    def _confirm(self, entry: Entry) -> widgets.HBox:
-        """Ask before pulling a very large file onto the disk."""
-        question = widgets.HTML(
-            f"<b>{_escape(entry.name)}</b> is {format_size(entry.size)}. "
-            f"Download it into <code>{_escape(str(self.mirror_dir))}</code>?"
+    def _show_preview(self, entry: Entry, body: str, ask: bool = False) -> None:
+        icon, kind = icon_and_kind(entry)
+        self._preview_title.value = (
+            f"{icon} {_escape(entry.name)} <span>· {format_size(entry.size)} · "
+            f"{_escape(kind)}</span>"
         )
-        go = widgets.Button(description="Download", button_style="primary", icon="download")
-        go.on_click(lambda _: self.open_file(entry, confirmed=True))
-        return widgets.HBox([question, go], layout=widgets.Layout(align_items="center"))
+        where = self.source.local_path(entry)
+        saved = "Saved at" if self.source.is_local(entry) else "Saves to"
+        self._preview_path.value = f"{saved} <code>{_escape(str(where))}</code>"
+        self._preview_body.value = body
+        self._preview_ask.layout.display = "" if ask else "none"
+        self._previewing = entry
+        self._preview.layout.display = ""
+
+    def _error_html(self, what: str, entry: Entry, error: Exception) -> str:
+        self._set_status(f"⚠️ {what} {entry.name}: {error}", error=True)
+        return viewers.note(
+            f"⚠️ {what} <b>{_escape(entry.name)}</b>:<br>{_escape(str(error))}",
+            card=True, error=True,
+        )
 
     def _file(self, entry: Optional[Entry]) -> Entry:
         entry = entry if entry is not None else self.selected
