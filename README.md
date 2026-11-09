@@ -88,6 +88,45 @@ explorer = open_explorer(mirror_dir="/content/drive/MyDrive/hf_mirror")
 Gated datasets (`ts-satfire-processed`) list without a token but need `HF_TOKEN` (a Colab
 secret works) and accepted terms to download.
 
+## Plotting from Colab
+
+`firevis.load(link)` opens one fire folder or `.npz` as an object you can list and plot from
+any cell. The link can be a Hugging Face URL (copy it from the browser, or `entry.url` in the
+explorer), `owner/dataset/path`, an explorer `Entry` such as `explorer.selected`, or a local
+path. Files download once into the same mirror folder as the explorer.
+
+```python
+import firevis
+
+fire = firevis.load("https://huggingface.co/datasets/SamuelWu318/ts-satfire/tree/main/ts-satfire/20562846")
+win = firevis.load("SamuelWu318/ts-satfire-6-1/val/p20562846.npz")
+
+fire                          # summary: dates and channels by group
+fire.channels()               # every channel name; fire.channels("FirePred") for one group
+fire.dates("I4")              # that channel's dates
+fire.show("I4", "2017-04-25") # one date: a 'YYYY-MM-DD' string or an index (0, 1, -1, ...)
+fire.overlay("Active fire")   # every date at once, slightly transparent, light → dark by day
+fire.grid("I4")               # every date as small pictures (dates=slice(0, 8) or a list)
+
+win.windows                   # window archives: their windows
+win.window = 1                # switch window
+
+both = firevis.compare(fire, win)   # or fire.compare(win); more than two works too
+both.channels()               # channels every fire has
+both.show("I4", "2017-04-25") # side by side, same date, one shared colour scale
+both.overlay("Active fire")
+both.grid("I4")               # one row per fire, one column per date
+```
+
+- **Channel names** ignore case, take a unique part of a name (`"esri"`), and match across a raw
+  fire folder and its window archives: `"I4"` finds `VIIRS I4 (running max)` in an `.npz`.
+  A wrong name suggests the closest ones.
+- **Options** on every plot: `view="fire"` (zoom to the fire, default), `"crop"` (the 256 x 256
+  area a window archive holds) or `"whole"`; `background="first" | "last" | "none"` under fire
+  masks; `ax=` to draw into your own matplotlib axes. Comparing a raw folder with an `.npz`
+  uses `view="crop"` by default, so both cover the same ground.
+- Plots return matplotlib Axes: save with `ax.figure.savefig("fire.png")`.
+
 ## Layout
 
 | Path | What |
@@ -97,6 +136,8 @@ secret works) and accepted terms to download.
 | `firevis/stacks.py` | Reads fire folders (GeoTIFFs) and `.npz` files into layers of dated frames |
 | `firevis/render.py` | Colour ramps, overlays, land-cover palettes, PNG encoding (numpy only) |
 | `firevis/viewer.py` | The image viewer: layer picker, corners, legend, ◀ date ▶ |
+| `firevis/pictures.py` | Draws a layer (one date or overlaid) for both the viewer and the plots |
+| `firevis/fire.py` | `firevis.load(link)`, `FireData` plots and `firevis.compare` |
 | `firevis/explorer.py` | The explorer window (ipywidgets) |
 | `tests/` | `pip install -e '.[test]' && pytest` |
 

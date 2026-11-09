@@ -79,9 +79,22 @@ def stretch(array: np.ndarray, low: float = 2, high: float = 98):
     return scaled, valid, (float(lo), float(hi))
 
 
-def values_rgb(array: np.ndarray, ramp: str = "values"):
-    """A continuous band on a colour ramp. Returns (rgb uint8, (lo, hi))."""
-    scaled, valid, span = stretch(array)
+def values_rgb(array: np.ndarray, ramp: str = "values", span: Optional[Tuple[float, float]] = None):
+    """A continuous band on a colour ramp. Returns (rgb uint8, (lo, hi)).
+
+    `span` fixes the (lo, hi) range, so several images share one colour scale;
+    by default each image is stretched to its own 2nd-98th percentile.
+    """
+    if span is None:
+        scaled, valid, span = stretch(array)
+    else:
+        array = np.asarray(array, dtype=np.float32)
+        valid = np.isfinite(array)
+        lo, hi = span
+        scaled = np.zeros(array.shape, np.float32)
+        if hi > lo:
+            scaled[valid] = np.clip((array[valid] - lo) / (hi - lo), 0, 1)
+        span = (float(lo), float(hi))
     anchors = np.array([hex_rgb(c) for c in RAMPS[ramp]], dtype=np.float32)
     x = scaled * (len(anchors) - 1)
     i = np.minimum(x.astype(int), len(anchors) - 2)

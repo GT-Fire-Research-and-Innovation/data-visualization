@@ -158,8 +158,20 @@ class HubSource:
         self._tree: Dict[Location, List[Entry]] = {}
         self._totals: Dict[str, Optional[int]] = {}
         self._errors: Dict[str, Exception] = {}
+        self._partial: set = set()  # datasets loaded one at a time by ensure()
 
     # ----- names (loaded up front) ------------------------------------------
+
+    def ensure(self, repo_id: str) -> None:
+        """Load one dataset's names, if nothing has loaded them yet.
+
+        For code that needs a single dataset (firevis.load): it skips listing
+        the owner's other datasets. A full load() replaces it.
+        """
+        if self.loaded or repo_id in self._partial:
+            return
+        self._store(repo_id, self._fetch(repo_id))
+        self._partial.add(repo_id)
 
     def load(self, repo_id: Optional[str] = None) -> None:
         """Fetch every dataset's file and folder names (or just one dataset's)."""
@@ -181,10 +193,17 @@ class HubSource:
         self.loaded = True
 
     def list(self, location: Location) -> List[Entry]:
-        """Entries directly inside `location`, folders first, then by name."""
-        if not self.loaded:
-            self.load()
+        """Entries directly inside `location`, folders first, then by name.
+
+        The root loads every dataset's names the first time; a folder inside a
+        dataset loads only that dataset (see ensure).
+        """
         repo_id, path = location
+        if not self.loaded:
+            if repo_id is None:
+                self.load()
+            else:
+                self.ensure(repo_id)
         if repo_id in self._errors:
             raise self._errors[repo_id]
         try:

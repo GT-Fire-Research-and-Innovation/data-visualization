@@ -47,6 +47,31 @@ STORED_CHANNEL_NAMES = (
 )
 LANDCOVER_CHANNEL = 21
 
+# The dataset's model crop of each VIIRS tile (firepred CROP_OFFSET / CROP_SIZE).
+CROP_OFFSET = 128
+CROP_SIZE = 256
+
+# The same channel's name in a window archive (left) and a raw fire folder (right),
+# so a raw fire and its processed windows can be compared by one name.
+CHANNEL_ALIASES = {
+    "VIIRS I1": "I1", "VIIRS I2": "I2", "VIIRS I3": "I3",
+    "VIIRS I4 (running max)": "I4", "VIIRS I5 (running max)": "I5", "VIIRS M11": "M11",
+    "VIIRS I4 night (running max)": "I4 night", "VIIRS I5 night (running max)": "I5 night",
+    "NDVI": "NDVI_last", "EVI": "EVI2_last", "min temperature": "minimum temperature",
+    "max temperature": "maximum temperature", "PDSI": "pdsi", "land cover": "land cover (MODIS)",
+    "total precipitation surface": "total_precipitation_surface_sum",
+}
+
+
+def same_channel_names(name: str) -> List[str]:
+    """Every name the channel goes by (raw folder and window archive), lower-case."""
+    key = name.strip().lower()
+    names = {key}
+    for archive, raw in CHANNEL_ALIASES.items():
+        if key in (archive.lower(), raw.lower()):
+            names |= {archive.lower(), raw.lower()}
+    return sorted(names)
+
 VIIRS_DAY_NAMES = {"b1": "I1", "b2": "I2", "b3": "I3", "b4": "I4", "b5": "I5", "m11": "M11"}
 _DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 
@@ -132,6 +157,10 @@ class Stack:
         """The fire's area as fractions (top, bottom, left, right) of the image, if known."""
         return None
 
+    def crop_box(self, window: int = 0) -> Optional[Tuple[float, float, float, float]]:
+        """The dataset's 256 x 256 model crop as fractions, if this isn't already it."""
+        return None
+
 
 # ----- GeoTIFFs ---------------------------------------------------------------
 
@@ -207,6 +236,18 @@ class FireStack(Stack):
                 burned |= self._mask(path, af) | self._mask(path, nifc)
             self._focus = fire_box(burned) or ()
         return self._focus or None
+
+    def crop_box(self, window: int = 0) -> Optional[Tuple[float, float, float, float]]:
+        """Rows/cols CROP_OFFSET .. +CROP_SIZE of the VIIRS grid: what a window archive holds.
+
+        Other grids (FirePred's 500 m one in 2017) get the same fractions, which
+        covers roughly the same ground; firepred resamples them exactly.
+        """
+        height, width = self.raster(self.files["VIIRS_Day"][0]).array.shape[1:]
+        end = CROP_OFFSET + CROP_SIZE
+        if height < end or width < end:  # smaller than the crop: show it all
+            return None
+        return (CROP_OFFSET / height, end / height, CROP_OFFSET / width, end / width)
 
     # -- reading, with a small cache (a VIIRS_Day day is ~11 MB in memory)
 
@@ -430,6 +471,9 @@ class NpzStack(Stack):
                 (lambda i, c=c: self._window(window)[c, i]) if len(data_shape) == 4
                 else (lambda i, c=c: self._window(window)[c]),
                 palette="igbp" if is_class else None, ramp="fire"))
+        false_colour = self.background(window)
+        if false_colour is not None:
+            layers.append(false_colour)
         return layers
 
     # -- any other .npz: each array is a layer

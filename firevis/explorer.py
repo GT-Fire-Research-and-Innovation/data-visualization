@@ -17,7 +17,6 @@ file's `Entry`; anything they print or plot shows under the window.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -26,8 +25,9 @@ import ipywidgets as widgets
 from IPython.display import display
 
 from . import viewers
-from .stacks import FireStack, NpzStack, date_of, is_fire_folder
+from .stacks import FireStack, NpzStack, is_fire_folder
 from .viewer import StackViewer
+from .fire import npz_date_lookup
 from .hub import DATASET, DEFAULT_ROOT, FILE, FOLDER, ROOT, Entry, HubSource, Location
 
 FileCallback = Callable[[Entry], None]
@@ -111,12 +111,7 @@ _CSS = """
 /* title bar */
 .fx-title { display: flex; align-items: center; height: 30px; padding: 0 12px;
   background: var(--fx-chrome); }
-.fx-lights { display: flex; gap: 8px; width: 60px; }
-.fx-lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
-.fx-lights i:nth-child(1) { background: #ff5f57; }
-.fx-lights i:nth-child(2) { background: #febc2e; }
-.fx-lights i:nth-child(3) { background: #28c840; }
-.fx-title-text { flex: 1; text-align: center; font-weight: 600; margin-right: 60px;
+.fx-title-text { flex: 1; text-align: center; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* toolbar + address bar */
@@ -639,7 +634,7 @@ class DatasetExplorer:
             repo_id.split("/", 1)[-1] if repo_id else self.source.owner
         )
         self._title.value = (
-            '<div class="fx-title"><span class="fx-lights"><i></i><i></i><i></i></span>'
+            '<div class="fx-title">'
             f'<span class="fx-title-text">{_escape(title)}</span></div>'
         )
         self._back_btn.disabled = not self._back
@@ -810,32 +805,8 @@ class DatasetExplorer:
         return None
 
     def _npz_dates(self, entry: Entry):
-        """(window, day) -> date for a window archive, from its fire's raw VIIRS_Day files.
-
-        Archive p<id>.npz holds windows of fire <id>; window w starts on day
-        w * ts_interval (window_config.json at the dataset root, default 1).
-        Returns None when the raw fire folder isn't in this account.
-        """
-        fire_id = entry.name[:-4] if entry.name.lower().endswith(".npz") else entry.name
-        fire_id = fire_id[1:] if fire_id.startswith("p") else fire_id
-        days_at = (f"{self.source.owner}/ts-satfire", f"ts-satfire/{fire_id}/VIIRS_Day")
-        if not self.source.exists(days_at):
-            return None
-        days = [date_of(e.name) for e in self.source.list(days_at) if not e.is_dir]
-        interval = 1
-        config = [e for e in self.source.list((entry.repo_id, "")) if e.name == "window_config.json"]
-        if config:
-            try:
-                interval = int(json.loads(self.source.download(config[0]).read_text())
-                               .get("ts_interval", 1))
-            except Exception:
-                pass
-
-        def lookup(window: int, day: int) -> Optional[str]:
-            index = window * interval + day
-            return days[index] if 0 <= index < len(days) else None
-
-        return lookup
+        """(window, day) -> date for a window archive (see fire.npz_date_lookup)."""
+        return npz_date_lookup(self.source, entry)
 
     def _error_html(self, what: str, entry: Entry, error: Exception) -> str:
         self._set_status(f"⚠️ {what} {entry.name}: {error}", error=True)

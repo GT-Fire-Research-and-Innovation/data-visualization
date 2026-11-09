@@ -12,8 +12,8 @@ dependencies = [
 [project.optional-dependencies]
 # GeoTIFF fire folders need rasterio; window .npz archives use Zstandard, which
 # Python < 3.14 reads through backports.zstd. Colab: %pip install rasterio backports.zstd
-imagery = ["rasterio", "pillow", "backports.zstd; python_version<'3.14'"]
-test = ["pytest", "pandas", "rasterio", "pillow", "backports.zstd; python_version<'3.14'"]
+imagery = ["rasterio", "pillow", "matplotlib", "backports.zstd; python_version<'3.14'"]
+test = ["pytest", "pandas", "rasterio", "pillow", "matplotlib", "backports.zstd; python_version<'3.14'"]
 
 [build-system]
 requires = ["setuptools>=61"]

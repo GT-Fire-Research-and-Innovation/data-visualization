@@ -25,8 +25,8 @@ from typing import Callable, List, Optional
 import ipywidgets as widgets
 import numpy as np
 
-from . import render
-from .stacks import CLASSES, MASK, RGB, VALUES, Layer, Stack
+from . import pictures, render
+from .stacks import MASK, Layer, Stack
 
 BACKGROUNDS = ("First day", "Last day", "None")
 VIEWS = ("Fire area", "Whole image")
@@ -121,8 +121,7 @@ class StackViewer:
         return self.layers[self.index]
 
     def can_overlay(self, layer: Optional[Layer] = None) -> bool:
-        layer = layer or self.layer
-        return layer.count > 1 and layer.style in (MASK, VALUES)
+        return pictures.can_overlay(layer or self.layer)
 
     def show_layer(self, index: int) -> None:
         """Switch layer, staying on the same date when the new layer has it."""
@@ -182,82 +181,20 @@ class StackViewer:
         try:
             box = self.stack.focus(self.window)
             self._view_dd.layout.display = "" if box else "none"
-            rgb, legend = self._draw_overlay() if self.overlaid else self._draw_frame()
+            background = self._bg_dd.value
+            picture = (pictures.overlay_picture(self.stack, layer, self.window, background)
+                       if self.overlaid else
+                       pictures.frame_picture(self.stack, layer, self.frame, self.window, background))
+            rgb = picture.rgb
             if box and self._view_dd.value == "Fire area":
-                rgb = _crop(rgb, box)
+                rgb = pictures.crop(rgb, box)
         except Exception as error:  # unreadable band, missing library...
             self._legend.value = f'<span class="fx-legend-error">⚠️ {html.escape(str(error))}</span>'
             self._image.value = b""
             return
         self._image.value = render.png_bytes(rgb)
-        self._legend.value = legend
+        self._legend.value = legend_html(picture.legend)
         self._update_nav()
-
-    def _base(self, frame: Optional[int]) -> np.ndarray:
-        """Faded false colour under fire masks (or a plain sheet)."""
-        shape = np.shape(self.layer.read(0))[-2:]
-        bg = self.stack.background(self.window)
-        choice = self._bg_dd.value
-        if bg is None or choice == "None":
-            return render.background(shape)
-        if frame is None:  # overlay: the chosen end of the fire
-            frame = 0 if choice == "First day" else bg.count - 1
-        else:  # one day: that day's own image, when the dates line up
-            date = self.layer.dates[frame]
-            frame = bg.dates.index(date) if date in bg.dates else 0
-        image = render.true_rgb(bg.read(frame))
-        if image.shape[:2] != tuple(shape):
-            return render.background(shape)
-        return render.background(shape, image)
-
-    def _draw_frame(self):
-        layer, i = self.layer, self.frame
-        array = layer.read(i)
-        if layer.style == RGB:
-            return render.true_rgb(array), ""
-        if layer.style == CLASSES:
-            rgb, classes = render.classes_rgb(array, layer.palette)
-            return rgb, _class_legend(classes)
-        if layer.style == MASK:
-            canvas = self._base(i)
-            colour = render.ramp_colour(layer.ramp, 0.55)
-            mask = np.asarray(array, bool)
-            if layer.outlined:
-                render.paint(canvas, mask, colour, 0.3)
-                render.paint(canvas, render.outline(mask), colour, 0.95)
-            else:
-                render.paint(canvas, mask, colour, 0.85)
-            count = int(mask.sum())
-            return render.to_uint8(canvas), (
-                f'<span class="fx-swatch" style="background:rgb{tuple(int(c) for c in colour)}"></span>'
-                f"{html.escape(layer.name)} · {count:,} pixel{'s' if count != 1 else ''}")
-        rgb, (lo, hi) = render.values_rgb(array)
-        return rgb, _bar(_fmt(lo), render.ramp_css("values"), _fmt(hi), "2nd–98th percentile")
-
-    def _draw_overlay(self):
-        layer = self.layer
-        n = layer.count
-        positions = np.linspace(0, 1, n) if n > 1 else [1.0]
-        frames = [layer.read(i) for i in range(n)]
-        canvas = self._base(None)
-        if layer.style == MASK:
-            render.overlay_masks(frames, positions, layer.ramp, canvas,
-                                 cumulative=layer.cumulative, outlined=layer.outlined)
-        else:
-            canvas = render.background(np.shape(frames[0]))  # values: own colours only
-            render.overlay_values(frames, positions, layer.ramp, canvas)
-        if layer.style == MASK:
-            pixels = int(np.logical_or.reduce([np.asarray(f, bool) for f in frames]).sum())
-            if not pixels:
-                return render.to_uint8(canvas), (
-                    f'<span class="fx-legend-note">No {html.escape(layer.name)} pixels '
-                    f"on any of the {n} days.</span>")
-            note = (f"colour = first day burned · {pixels:,} pixels" if layer.cumulative
-                    else f"later days on top · {pixels:,} pixels")
-        else:
-            note = "later days on top · stronger = higher value"
-        return render.to_uint8(canvas), _bar(layer.dates[0], render.ramp_css(layer.ramp),
-                                             layer.dates[-1], note)
 
     def _update_nav(self) -> None:
         layer = self.layer
@@ -280,15 +217,6 @@ class StackViewer:
             close()
 
 
-def _crop(rgb: np.ndarray, box) -> np.ndarray:
-    """Cut an image to (top, bottom, left, right) fractions."""
-    height, width = rgb.shape[:2]
-    top, bottom, left, right = box
-    rows = slice(int(round(top * height)), max(int(round(bottom * height)), int(round(top * height)) + 1))
-    cols = slice(int(round(left * width)), max(int(round(right * width)), int(round(left * width)) + 1))
-    return rgb[rows, cols]
-
-
 def _set(widget, name: str, on: bool) -> None:
     (widget.add_class if on else widget.remove_class)(name)
 
@@ -298,6 +226,23 @@ def _bar(left: str, gradient: str, right: str, note: str = "") -> str:
     return (f"<span>{html.escape(left)}</span>"
             f'<span class="fx-bar" style="background:{gradient}"></span>'
             f"<span>{html.escape(right)}</span>{note_html}")
+
+
+def legend_html(legend: pictures.Legend) -> str:
+    """The viewer's legend line for a picture."""
+    if legend.kind == "values":
+        return _bar(_fmt(legend.lo), render.ramp_css(legend.ramp), _fmt(legend.hi), legend.note)
+    if legend.kind == "time":
+        return _bar(legend.first, render.ramp_css(legend.ramp), legend.last, legend.note)
+    if legend.kind == "classes":
+        return _class_legend(legend.classes)
+    if legend.kind == "mask":
+        count = legend.count
+        return (f'<span class="fx-swatch" style="background:rgb{legend.colour}"></span>'
+                f"{html.escape(legend.name)} · {count:,} pixel{'s' if count != 1 else ''}")
+    if legend.kind == "empty":
+        return f'<span class="fx-legend-note">{html.escape(legend.message)}</span>'
+    return ""
 
 
 def _class_legend(classes) -> str:
