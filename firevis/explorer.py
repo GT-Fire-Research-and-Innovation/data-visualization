@@ -3,9 +3,12 @@
     from firevis import open_explorer
     explorer = open_explorer()          # root: https://huggingface.co/SamuelWu318
 
-Clicking a folder opens it. Clicking a file selects it and calls every function
-registered with `explorer.on_file_click(fn)`; `fn` gets the file's `Entry`.
-Anything those functions print or plot shows up under the explorer window.
+Every file and folder name loads when the explorer opens, so browsing needs no
+further requests. Clicking a folder opens it. Clicking a file selects it and
+calls every function registered with `explorer.on_file_click(fn)`; `fn` gets
+the file's `Entry`. Nothing is downloaded until something asks for it with
+`explorer.download(entry)`. Anything those functions print or plot shows up
+under the explorer window.
 """
 
 from __future__ import annotations
@@ -184,12 +187,17 @@ def _set_class(widget: widgets.DOMWidget, name: str, on: bool) -> None:
 class DatasetExplorer:
     """File-explorer window over a Hub user's datasets.
 
+    All file and folder names load once, up front, so browsing is instant.
+    File contents load only when asked for, with `download(entry)`.
+
     root:          Hub link or user/org name whose datasets form the top level.
-    source:        Anything with `owner`, `list(location)` and `refresh(location)`;
-                   defaults to `HubSource(root)`. Swap in a fake for tests.
+    source:        A `HubSource` (or anything with its `owner`, `load`, `list`,
+                   `exists` and `download`); defaults to `HubSource(root)`.
     on_file_click: Optional function called with the `Entry` of a clicked file.
     height:        Height of the list area, in pixels.
     page_size:     Rows shown before a "Show more" button appears.
+    autoload:      Load the names now. `open_explorer` passes False so it can
+                   show the window first and fill it in.
     """
 
     def __init__(
@@ -200,6 +208,7 @@ class DatasetExplorer:
         on_file_click: Optional[FileCallback] = None,
         height: int = 420,
         page_size: int = 200,
+        autoload: bool = True,
     ):
         self.source = source if source is not None else HubSource(root)
         self.page_size = page_size
@@ -218,10 +227,38 @@ class DatasetExplorer:
             self.on_file_click(on_file_click)
 
         self._build(height)
-        self._load_sidebar()
-        self.navigate(ROOT, record=False)
+        if autoload:
+            self.load()
 
     # ----- public API -------------------------------------------------------
+
+    def load(self) -> bool:
+        """Fetch every file and folder name from the Hub and show the root."""
+        self._set_status(f"Loading file list for {self.source.owner}…")
+        try:
+            self.source.load()
+        except Exception as error:
+            self._set_status(f"⚠️ Couldn't load {self.source.owner}: {error}", error=True)
+            return False
+        self._back.clear()
+        self._forward.clear()
+        self._load_sidebar()
+        return self.navigate(ROOT, record=False)
+
+    def download(self, entry: Optional[Entry] = None) -> str:
+        """Local path to a file's contents (the selected file by default).
+
+        This is the lazy part: nothing is downloaded until this is called, and
+        a file fetched once comes from the local Hugging Face cache after that.
+        """
+        entry = entry if entry is not None else self.selected
+        if entry is None:
+            raise ValueError("No file selected")
+        self._set_status(f"Downloading {entry.name} ({format_size(entry.size)})…")
+        try:
+            return self.source.download(entry)
+        finally:
+            self._update_status()
 
     def on_file_click(self, callback: FileCallback) -> FileCallback:
         """Register `callback(entry)` to run when a file is clicked.
@@ -232,8 +269,7 @@ class DatasetExplorer:
         return callback
 
     def navigate(self, location: Location, record: bool = True) -> bool:
-        """Open a folder. Returns False (and stays put) if listing it fails."""
-        self._set_status("Loading…")
+        """Open a folder. Returns False (and stays put) if it can't be opened."""
         try:
             entries = self.source.list(location)
         except Exception as error:  # network, auth, missing path...
@@ -261,11 +297,21 @@ class DatasetExplorer:
             self.navigate(parent)
 
     def refresh(self) -> None:
-        """Re-fetch the current folder from the Hub."""
-        self.source.refresh(self.location)
-        if self.location == ROOT:
-            self._load_sidebar()
-        self.navigate(self.location, record=False)
+        """Re-fetch names from the Hub: the current dataset, or all at the root."""
+        repo_id = self.location[0]
+        if repo_id is None:
+            self.load()
+            return
+        self._set_status(f"Reloading {repo_id}…")
+        try:
+            self.source.load(repo_id)
+        except Exception as error:
+            self._set_status(f"⚠️ Couldn't reload {repo_id}: {error}", error=True)
+            return
+        target = self.location
+        while target != ROOT and not self.source.exists(target):
+            target = self._parent(target)  # the folder was deleted on the Hub
+        self.navigate(target, record=False)
 
     @property
     def widget(self) -> widgets.VBox:
@@ -421,6 +467,9 @@ class DatasetExplorer:
     def _update_status(self) -> None:
         count = len(self.entries)
         text = f"{count} item{'s' if count != 1 else ''}"
+        total = sum(entry.size or 0 for entry in self.entries)
+        if total:
+            text += f", {format_size(total)}"
         if self.selected is not None:
             text += f"  ·  Selected: {self.selected.name} ({format_size(self.selected.size)})"
         self._set_status(text)
@@ -483,7 +532,12 @@ class DatasetExplorer:
 def open_explorer(
     root: str = DEFAULT_ROOT, on_file_click: Optional[FileCallback] = None, **options
 ) -> DatasetExplorer:
-    """Show a dataset explorer in the notebook and return it."""
-    explorer = DatasetExplorer(root, on_file_click=on_file_click, **options)
+    """Show a dataset explorer in the notebook and return it.
+
+    The window appears right away and fills in once every file and folder name
+    has loaded (a few seconds for SamuelWu318's ~13,000 entries).
+    """
+    explorer = DatasetExplorer(root, on_file_click=on_file_click, autoload=False, **options)
     explorer.show()
+    explorer.load()
     return explorer

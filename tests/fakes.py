@@ -1,37 +1,41 @@
-"""A stand-in for huggingface_hub.HfApi with a small fixed tree."""
+"""A stand-in for huggingface_hub.HfApi with a small fixed set of datasets."""
 
 from types import SimpleNamespace
 
+# Flat recursive listings, like list_repo_tree(recursive=True). "x/" is a folder,
+# "path:size" a file. "deep/a" is never listed itself: it is implied by its file.
 TREE = {
-    "me/alpha": {
-        "": ["roi/", "train/", "README.md:6865"],
-        "roi": ["roi/fire_all.csv:2048"],
-        "train": [f"train/p{i}.npz:{1000 * i}" for i in range(1, 6)],
-    },
-    "me/beta": {"": []},
+    "me/alpha": ["roi/", "roi/fire_all.csv:2048", "train/"]
+    + [f"train/p{i}.npz:{1000 * i}" for i in range(1, 6)]
+    + ["README.md:6865", "deep/a/b.txt:5"],
+    "me/beta": [],
+    "me/broken": PermissionError("401 Unauthorized"),
 }
 
 
 class FakeApi:
     def __init__(self, tree=TREE):
-        self.tree = tree
+        self.tree = dict(tree)
         self.calls = []
 
     def list_datasets(self, author):
         self.calls.append(("datasets", author))
         return [SimpleNamespace(id=repo) for repo in reversed(list(self.tree))]
 
-    def list_repo_tree(self, repo_id, path_in_repo=None, repo_type=None, revision=None,
-                       recursive=False):
-        self.calls.append(("tree", repo_id, path_in_repo))
-        assert repo_type == "dataset" and not recursive
-        try:
-            items = self.tree[repo_id][path_in_repo or ""]
-        except KeyError:
-            raise FileNotFoundError(f"{repo_id}/{path_in_repo} not found")
+    def list_repo_tree(self, repo_id, repo_type=None, revision=None, recursive=False,
+                       path_in_repo=None):
+        self.calls.append(("tree", repo_id))
+        assert repo_type == "dataset" and recursive and path_in_repo is None
+        items = self.tree[repo_id]
+        if isinstance(items, Exception):
+            raise items
         for item in items:
             if item.endswith("/"):
                 yield SimpleNamespace(path=item[:-1])  # like RepoFolder: no size
             else:
                 path, size = item.rsplit(":", 1)
                 yield SimpleNamespace(path=path, size=int(size))
+
+    def hf_hub_download(self, repo_id, filename, repo_type=None, revision=None):
+        self.calls.append(("download", repo_id, filename))
+        return f"/cache/{repo_id}/{filename}"
