@@ -33,9 +33,9 @@ def test_build_tree_fills_in_folders_and_sizes():
     assert tree[("me/x", "a/b")] == [Entry("c.npz", FILE, "me/x", "a/b/c.npz", 10)]
 
 
-def test_everything_loads_once_up_front():
+def test_everything_loads_once_up_front(mirror):
     api = FakeApi()
-    source = HubSource("me", api=api)
+    source = HubSource("me", api=api, mirror_dir=mirror)
     root = source.list(ROOT)  # first use loads all datasets
     assert [e.name for e in root] == ["alpha", "beta", "broken"]
     assert all(e.kind == DATASET for e in root)
@@ -47,8 +47,8 @@ def test_everything_loads_once_up_front():
     assert len(api.calls) == calls  # browsing needs no more requests
 
 
-def test_listing_contents():
-    source = HubSource("me", api=FakeApi())
+def test_listing_contents(mirror):
+    source = HubSource("me", api=FakeApi(), mirror_dir=mirror)
     assert [(e.name, e.kind, e.size) for e in source.list(("me/alpha", ""))] == [
         ("deep", FOLDER, 5), ("roi", FOLDER, 2048), ("train", FOLDER, 15000),
         ("README.md", FILE, 6865)]
@@ -56,8 +56,8 @@ def test_listing_contents():
     assert source.list(("me/beta", "")) == []
 
 
-def test_broken_dataset_is_listed_but_cannot_open():
-    source = HubSource("me", api=FakeApi())
+def test_broken_dataset_is_listed_but_cannot_open(mirror):
+    source = HubSource("me", api=FakeApi(), mirror_dir=mirror)
     broken = source.list(ROOT)[2]
     assert broken.name == "broken" and broken.size is None
     with pytest.raises(PermissionError):
@@ -66,9 +66,9 @@ def test_broken_dataset_is_listed_but_cannot_open():
         source.list(("me/alpha", "nope"))
 
 
-def test_reload_one_dataset():
+def test_reload_one_dataset(mirror):
     api = FakeApi()
-    source = HubSource("me", api=api)
+    source = HubSource("me", api=api, mirror_dir=mirror)
     source.load()
     api.tree["me/beta"] = ["new.csv:7"]
     api.calls.clear()
@@ -79,13 +79,45 @@ def test_reload_one_dataset():
     assert source.exists(("me/alpha", "train"))  # other datasets untouched
 
 
-def test_download_is_lazy_and_files_only():
+def test_download_saves_into_the_mirror_once(mirror):
     api = FakeApi()
-    source = HubSource("me", api=api)
+    source = HubSource("me", api=api, mirror_dir=mirror)
     readme = source.list(("me/alpha", ""))[-1]
+    assert not source.is_local(readme)
+    assert not any(c[0] == "download" for c in api.calls)  # listing downloads nothing
+    path = source.download(readme)
+    assert path == mirror.resolve() / "me" / "alpha" / "README.md"
+    assert path.read_bytes().startswith(b"# Alpha") and path.stat().st_size == 6865
+    assert source.is_local(readme)
+    source.download(readme)
+    assert [c for c in api.calls if c[0] == "download"] == [("download", "me/alpha", "README.md")]
+
+
+def test_mirror_survives_a_new_source(mirror):
+    """Files saved by one session are found by the next (e.g. a Drive mirror)."""
+    HubSource("me", api=FakeApi(), mirror_dir=mirror).download(
+        Entry("b.txt", FILE, "me/alpha", "deep/a/b.txt", 5))
+    api = FakeApi()
+    source = HubSource("me", api=api, mirror_dir=mirror)
+    entry = source.list(("me/alpha", "deep/a"))[0]
+    assert source.is_local(entry)
+    assert source.download(entry).read_text() == "hello"
     assert not any(c[0] == "download" for c in api.calls)
-    assert source.download(readme) == "/cache/me/alpha/README.md"
-    assert api.calls[-1] == ("download", "me/alpha", "README.md")
+
+
+def test_partial_download_is_fetched_again(mirror):
+    api = FakeApi()
+    source = HubSource("me", api=api, mirror_dir=mirror)
+    readme = source.list(("me/alpha", ""))[-1]
+    source.local_path(readme).parent.mkdir(parents=True)
+    source.local_path(readme).write_bytes(b"# Al")  # cut off
+    assert not source.is_local(readme)
+    source.download(readme)
+    assert source.is_local(readme)
+
+
+def test_folders_cannot_be_downloaded(mirror):
+    source = HubSource("me", api=FakeApi(), mirror_dir=mirror)
     with pytest.raises(IsADirectoryError):
         source.download(source.list(("me/alpha", ""))[0])
 

@@ -2,15 +2,20 @@
 
 The root is a Hub user (or org) and its datasets are the top-level folders.
 Every file and folder name is fetched up front (one recursive listing per
-dataset, run in parallel), so moving around the tree needs no network. File
-contents are the lazy part: `HubSource.download(entry)` fetches a file only
-when it is asked for, and the Hub cache keeps it for next time.
+dataset, run in parallel), so moving around the tree needs no network.
+
+File contents are the lazy part. `HubSource.download(entry)` fetches a file the
+first time it is asked for and saves it into a local mirror of the Hub layout,
+`<mirror_dir>/<owner>/<dataset>/<path>` (in Colab, `/content/hf_mirror/...`).
+After that the mirror copy is used, so the file can be opened again, by the
+explorer or by any code that knows the path, without another download.
 """
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -131,13 +136,18 @@ class HubSource:
     dataset with `load(repo_id)`. `api` defaults to `huggingface_hub.HfApi()`,
     which uses a token from `HF_TOKEN` or `huggingface_hub.login()` if present
     (needed for private datasets, and for downloading gated ones).
+
+    mirror_dir: where downloaded files are kept, relative to the working
+    directory unless absolute. Point it at a mounted Google Drive folder to keep
+    files across Colab runtimes.
     """
 
     def __init__(self, root: str = DEFAULT_ROOT, api=None, revision: str = "main",
-                 workers: int = 8):
+                 workers: int = 8, mirror_dir: str = "hf_mirror"):
         self.owner = parse_owner(root)
         self.revision = revision
         self.workers = workers
+        self.mirror_dir = Path(mirror_dir).expanduser().resolve()
         if api is None:
             from huggingface_hub import HfApi
 
@@ -204,16 +214,39 @@ class HubSource:
             self._tree.update(tree)
             self._totals[repo_id] = total
 
-    # ----- file contents (lazy) ---------------------------------------------
+    # ----- file contents (lazy, kept in the mirror) -------------------------
 
-    def download(self, entry: Entry) -> str:
-        """Local path to a file's contents, downloading it only the first time.
+    def local_path(self, entry: Entry) -> Path:
+        """Where `entry` lives in the mirror (whether or not it is there yet)."""
+        return self.mirror_dir / entry.repo_id / entry.path
 
-        Uses the Hugging Face cache (~/.cache/huggingface), so a file already
-        fetched in this runtime comes straight from disk.
+    def is_local(self, entry: Entry) -> bool:
+        """True if the file is fully downloaded into the mirror."""
+        if entry.kind != FILE:
+            return False
+        path = self.local_path(entry)
+        try:
+            return path.is_file() and (entry.size is None or path.stat().st_size == entry.size)
+        except OSError:
+            return False
+
+    def download(self, entry: Entry) -> Path:
+        """Path to the file in the mirror, fetching it from the Hub only if needed.
+
+        A copy whose size doesn't match the Hub (an interrupted download) is
+        fetched again.
         """
         if entry.kind != FILE:
             raise IsADirectoryError(f"{entry.repo_id}/{entry.path} is a folder")
-        return self.api.hf_hub_download(
-            entry.repo_id, entry.path, repo_type="dataset", revision=self.revision
-        )
+        path = self.local_path(entry)
+        if not self.is_local(entry):
+            # local_dir writes the file straight to <local_dir>/<path>, with no
+            # second copy in ~/.cache/huggingface.
+            self.api.hf_hub_download(
+                entry.repo_id,
+                entry.path,
+                repo_type="dataset",
+                revision=self.revision,
+                local_dir=str(self.mirror_dir / entry.repo_id),
+            )
+        return path

@@ -12,8 +12,8 @@ def api():
 
 
 @pytest.fixture
-def explorer(api):
-    return DatasetExplorer(source=HubSource("me", api=api), page_size=4)
+def explorer(api, mirror):
+    return DatasetExplorer(source=HubSource("me", api=api, mirror_dir=mirror), page_size=4)
 
 
 def names(explorer):
@@ -134,25 +134,24 @@ def test_browsing_makes_no_requests(explorer, api):
     click(explorer, "deep")
     click(explorer, "a")
     assert names(explorer) == ["b.txt"]
-    click(explorer, "b.txt")
     explorer._back_btn.click()
     explorer._crumbs[0].click()
-    assert len(api.calls) == calls
+    assert len(api.calls) == calls  # only opening a file talks to the Hub
 
 
-def test_window_can_show_before_loading(api):
-    explorer = DatasetExplorer(source=HubSource("me", api=api), autoload=False)
+def test_window_can_show_before_loading(api, mirror):
+    explorer = DatasetExplorer(source=HubSource("me", api=api, mirror_dir=mirror), autoload=False)
     assert api.calls == [] and explorer.entries == []
     assert explorer.load() is True
     assert names(explorer) == ["alpha", "beta", "broken"]
 
 
-def test_failed_load_reports_error():
+def test_failed_load_reports_error(mirror):
     class DownApi(FakeApi):
         def list_datasets(self, author):
             raise ConnectionError("Hub unreachable")
 
-    explorer = DatasetExplorer(source=HubSource("me", api=DownApi()))
+    explorer = DatasetExplorer(source=HubSource("me", api=DownApi(), mirror_dir=mirror))
     assert "Hub unreachable" in explorer._status.value
     assert "fx-error" in explorer._status._dom_classes
 
@@ -184,12 +183,80 @@ def test_refresh_at_root_reloads_everything(explorer, api):
     assert "me/gamma" in explorer._side_buttons
 
 
-def test_download_is_lazy(explorer, api):
+def downloads(api):
+    return [c[2] for c in api.calls if c[0] == "download"]
+
+
+def meta(explorer, name):
+    for row in explorer._list.children:
+        if "fx-row" in row._dom_classes and row.children[0].description.endswith(name):
+            return row.children[1].value
+    raise AssertionError(f"no row named {name}")
+
+
+def test_clicking_a_file_saves_it_once(explorer, api, mirror):
+    click(explorer, "alpha")
+    assert "✓" not in meta(explorer, "README.md")
+    click(explorer, "README.md")
+    assert downloads(api) == ["README.md"]
+    assert (mirror / "me" / "alpha" / "README.md").is_file()
+    assert "✓" in meta(explorer, "README.md")
+    assert explorer._status.value.endswith("saved locally")
+    click(explorer, "roi")
+    explorer._back_btn.click()
+    click(explorer, "README.md")  # opened again: comes from the mirror
+    assert downloads(api) == ["README.md"]
+
+
+def test_saved_files_are_marked_in_a_new_explorer(explorer, api, mirror):
     click(explorer, "alpha")
     click(explorer, "README.md")
-    assert not any(c[0] == "download" for c in api.calls)  # clicking downloads nothing
-    assert explorer.download() == "/cache/me/alpha/README.md"
-    assert "Selected: README.md" in explorer._status.value
+    again = DatasetExplorer(source=HubSource("me", api=FakeApi(), mirror_dir=mirror))
+    click(again, "alpha")
+    assert "✓" in meta(again, "README.md")
+    assert "✓" not in meta(again, "roi")  # folders never get the mark
+
+
+def test_open_shows_text_and_only_saves_npz(explorer):
+    click(explorer, "alpha")
+    readme = explorer.entries[-1]
+    items = explorer._open_items(readme)
+    assert "README.md" in items[0].data and "# Alpha" in items[1].data
+    click(explorer, "train")
+    items = explorer._open_items(explorer.entries[0])
+    assert "No preview yet" in items[1].data and "np.load(" in items[1].data
+
+
+def test_open_files_can_be_turned_off(api, mirror):
+    explorer = DatasetExplorer(source=HubSource("me", api=api, mirror_dir=mirror),
+                               open_files=False)
+    clicked = []
+    explorer.on_file_click(clicked.append)
+    click(explorer, "alpha")
+    click(explorer, "README.md")
+    assert downloads(api) == [] and clicked[0].name == "README.md"
+
+
+def test_big_files_ask_first(api, mirror):
+    explorer = DatasetExplorer(source=HubSource("me", api=api, mirror_dir=mirror),
+                               confirm_size=3000)
+    click(explorer, "alpha")
+    click(explorer, "train")
+    big = explorer.entries[3]  # p4.npz, 4000 bytes
+    question = explorer._open_items(big)[0]
+    assert "4.0 KB" in question.children[0].value
+    assert downloads(api) == []
+    question.children[1].click()
+    assert downloads(api) == ["train/p4.npz"]
+    assert explorer._open_items(big)[0].data.count("p4.npz")  # saved now: no question
+
+
+def test_failed_download_reports_error(explorer, api):
+    api.download_error = PermissionError("Access to dataset is restricted")
+    click(explorer, "alpha")
+    items = explorer._open_items(explorer.entries[-1])
+    assert "Access to dataset is restricted" in items[0].value
+    assert "fx-error" in explorer._status._dom_classes
 
 
 def test_download_needs_a_file(explorer):
@@ -212,13 +279,13 @@ def test_kinds():
     assert icon_and_kind(Entry(".gitattributes", FILE, "r", ".gitattributes", 1))[1] == "File"
 
 
-def test_open_explorer_shows_window_before_loading(monkeypatch):
+def test_open_explorer_shows_window_before_loading(monkeypatch, mirror):
     import firevis.explorer as module
 
     seen = []
     monkeypatch.setattr(module, "display", lambda w: seen.append(source.loaded))
-    source = HubSource("me", api=FakeApi())
-    monkeypatch.setattr(module, "HubSource", lambda root: source)
+    source = HubSource("me", api=FakeApi(), mirror_dir=mirror)
+    monkeypatch.setattr(module, "HubSource", lambda root, mirror_dir: source)
     explorer = module.open_explorer("me")
     assert seen == [False]  # the window was on screen before any names loaded
     assert names(explorer) == ["alpha", "beta", "broken"]

@@ -4,21 +4,26 @@
     explorer = open_explorer()          # root: https://huggingface.co/SamuelWu318
 
 Every file and folder name loads when the explorer opens, so browsing needs no
-further requests. Clicking a folder opens it. Clicking a file selects it and
-calls every function registered with `explorer.on_file_click(fn)`; `fn` gets
-the file's `Entry`. Nothing is downloaded until something asks for it with
-`explorer.download(entry)`. Anything those functions print or plot shows up
-under the explorer window.
+further requests. Clicking a folder opens it. Clicking a file opens it: the
+first time, it is downloaded into a local mirror of the Hub layout
+(`hf_mirror/<owner>/<dataset>/<path>`); later clicks use that saved copy. Text
+files (txt, json, md, csv, ...) are shown under the window; NumPy archives and
+other binary files are only saved for now. Files over 1 GB ask first.
+
+Functions registered with `explorer.on_file_click(fn)` run after that, with the
+file's `Entry`; anything they print or plot also shows under the window.
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Callable, List, Optional
 
 import ipywidgets as widgets
 from IPython.display import display
 
+from . import viewers
 from .hub import DATASET, DEFAULT_ROOT, FILE, FOLDER, ROOT, Entry, HubSource, Location
 
 FileCallback = Callable[[Entry], None]
@@ -150,10 +155,12 @@ _CSS = """
 .fx-row:hover { background: var(--fx-hover); }
 .fx-window .jupyter-button.fx-name { flex: 1 1 auto; width: auto; min-width: 0;
   text-align: left; padding: 0 8px; }
-.fx-meta { flex: 0 0 210px; line-height: 26px; }
+.fx-meta { flex: 0 0 228px; line-height: 26px; }
+.fx-local { display: inline-block; width: 18px; text-align: center; color: #1a7f37;
+  font-weight: 700; }
 .fx-row.fx-selected { background: var(--fx-accent) !important; }
 .fx-row.fx-selected .jupyter-button, .fx-row.fx-selected .fx-size,
-.fx-row.fx-selected .fx-kind { color: #fff !important; }
+.fx-row.fx-selected .fx-kind, .fx-row.fx-selected .fx-local { color: #fff !important; }
 .fx-empty { color: var(--fx-muted); text-align: center; padding: 40px 0; }
 .fx-window .jupyter-button.fx-more { width: auto; color: var(--fx-accent) !important;
   margin: 6px auto !important; padding: 0 10px; }
@@ -188,12 +195,18 @@ class DatasetExplorer:
     """File-explorer window over a Hub user's datasets.
 
     All file and folder names load once, up front, so browsing is instant.
-    File contents load only when asked for, with `download(entry)`.
+    Clicking a file opens it: the first time, it is downloaded into the local
+    mirror (`mirror_dir`); after that the saved copy is used. Text files are
+    shown under the window; other files are just saved for now.
 
     root:          Hub link or user/org name whose datasets form the top level.
-    source:        A `HubSource` (or anything with its `owner`, `load`, `list`,
-                   `exists` and `download`); defaults to `HubSource(root)`.
+    source:        A `HubSource` (or anything with the same methods); defaults
+                   to `HubSource(root, mirror_dir=mirror_dir)`.
+    mirror_dir:    Folder that downloaded files are saved into. Use a mounted
+                   Google Drive folder to keep them across Colab runtimes.
     on_file_click: Optional function called with the `Entry` of a clicked file.
+    open_files:    Download and show files when clicked (default True).
+    confirm_size:  Files bigger than this many bytes ask before downloading.
     height:        Height of the list area, in pixels.
     page_size:     Rows shown before a "Show more" button appears.
     autoload:      Load the names now. `open_explorer` passes False so it can
@@ -205,12 +218,17 @@ class DatasetExplorer:
         root: str = DEFAULT_ROOT,
         *,
         source=None,
+        mirror_dir: str = "hf_mirror",
         on_file_click: Optional[FileCallback] = None,
+        open_files: bool = True,
+        confirm_size: int = 1_000_000_000,
         height: int = 420,
         page_size: int = 200,
         autoload: bool = True,
     ):
-        self.source = source if source is not None else HubSource(root)
+        self.source = source if source is not None else HubSource(root, mirror_dir=mirror_dir)
+        self.open_files = open_files
+        self.confirm_size = confirm_size
         self.page_size = page_size
         self.location: Location = ROOT
         self.entries: List[Entry] = []
@@ -245,20 +263,37 @@ class DatasetExplorer:
         self._load_sidebar()
         return self.navigate(ROOT, record=False)
 
-    def download(self, entry: Optional[Entry] = None) -> str:
-        """Local path to a file's contents (the selected file by default).
+    @property
+    def mirror_dir(self) -> Path:
+        """Folder that opened files are saved into."""
+        return self.source.mirror_dir
 
-        This is the lazy part: nothing is downloaded until this is called, and
-        a file fetched once comes from the local Hugging Face cache after that.
+    def download(self, entry: Optional[Entry] = None) -> Path:
+        """Path to a file in the mirror (the selected file by default).
+
+        The first call fetches it from the Hub; later calls, even in a new
+        explorer, return the saved copy without downloading.
         """
-        entry = entry if entry is not None else self.selected
-        if entry is None:
-            raise ValueError("No file selected")
-        self._set_status(f"Downloading {entry.name} ({format_size(entry.size)})…")
+        entry = self._file(entry)
+        if not self.source.is_local(entry):
+            self._set_status(f"Downloading {entry.name} ({format_size(entry.size)})…")
         try:
-            return self.source.download(entry)
+            path = self.source.download(entry)
         finally:
             self._update_status()
+        self._refresh_row(entry)
+        return path
+
+    def open_file(self, entry: Optional[Entry] = None) -> None:
+        """Download a file if needed and show it under the window."""
+        entry = self._file(entry)
+        self.output.clear_output()
+        with self.output:  # download progress bars land here too
+            items = self._open_items(entry)
+        self.output.clear_output()
+        with self.output:
+            for item in items:
+                display(item)
 
     def on_file_click(self, callback: FileCallback) -> FileCallback:
         """Register `callback(entry)` to run when a file is clicked.
@@ -353,7 +388,8 @@ class DatasetExplorer:
 
         header = widgets.HTML(
             '<div class="fx-head"><span class="fx-col-name">Name</span>'
-            '<span class="fx-size">Size</span><span class="fx-kind">Kind</span></div>'
+            '<span class="fx-size">Size</span><span class="fx-kind">Kind</span>'
+            '<span class="fx-local"></span></div>'
         )
         self._list = widgets.VBox(layout=widgets.Layout(height=f"{height}px"))
         self._list.add_class("fx-list")
@@ -441,10 +477,7 @@ class DatasetExplorer:
             icon, kind = icon_and_kind(entry)
             name.description = f"{icon}  {entry.name}"
             name.tooltip = entry.path or entry.repo_id
-            meta.value = (
-                f'<span class="fx-size">{format_size(entry.size)}</span>'
-                f'<span class="fx-kind">{_escape(kind)}</span>'
-            )
+            meta.value = self._meta_html(entry, kind)
             _set_class(row, "fx-selected", entry == self.selected)
         children = [row for row, _, _ in self._rows[: len(shown)]]
         hidden = len(self.entries) - len(shown)
@@ -464,6 +497,24 @@ class DatasetExplorer:
         row.add_class("fx-row")
         return row, name, meta
 
+    def _meta_html(self, entry: Entry, kind: Optional[str] = None) -> str:
+        if kind is None:
+            kind = icon_and_kind(entry)[1]
+        saved = not entry.is_dir and self.source.is_local(entry)
+        mark = '<span class="fx-local" title="Saved locally">✓</span>' if saved else (
+            '<span class="fx-local"></span>'
+        )
+        return (
+            f'<span class="fx-size">{format_size(entry.size)}</span>'
+            f'<span class="fx-kind">{_escape(kind)}</span>{mark}'
+        )
+
+    def _refresh_row(self, entry: Entry) -> None:
+        """Redraw one row's size/kind/saved mark (after a download)."""
+        for i, shown in enumerate(self.entries[: min(self._limit, len(self._rows))]):
+            if shown == entry:
+                self._rows[i][2].value = self._meta_html(entry)
+
     def _update_status(self) -> None:
         count = len(self.entries)
         text = f"{count} item{'s' if count != 1 else ''}"
@@ -472,6 +523,8 @@ class DatasetExplorer:
             text += f", {format_size(total)}"
         if self.selected is not None:
             text += f"  ·  Selected: {self.selected.name} ({format_size(self.selected.size)})"
+            if self.source.is_local(self.selected):
+                text += ", saved locally"
         self._set_status(text)
 
     def _set_status(self, text: str, error: bool = False) -> None:
@@ -493,9 +546,57 @@ class DatasetExplorer:
             if self.entries[i] in (previous, entry):
                 _set_class(row, "fx-selected", self.entries[i] == entry)
         self._update_status()
+        if self.open_files:
+            self.open_file(entry)
+        else:
+            self.output.clear_output()
         with self.output:
             for callback in self._callbacks:
                 callback(entry)
+
+    def _open_items(self, entry: Entry, confirmed: bool = False) -> List[object]:
+        """What to show for a clicked file: its preview, a question, or an error."""
+        too_big = entry.size is not None and entry.size > self.confirm_size
+        if too_big and not confirmed and not self.source.is_local(entry):
+            return [self._confirm(entry)]
+        try:
+            path = self.download(entry)
+        except Exception as error:  # gated dataset, no network, disk full...
+            self._set_status(f"⚠️ Couldn't download {entry.name}: {error}", error=True)
+            return [widgets.HTML(
+                '<div style="max-width:980px;margin:6px 0;padding:10px 12px;'
+                'border:1px solid #f1c0c8;border-radius:8px;background:#fdf2f4;color:#c4314b">'
+                f"⚠️ Couldn't download <b>{_escape(entry.name)}</b>: {_escape(str(error))}</div>"
+            )]
+        return viewers.render(path, entry)
+
+    def _confirm(self, entry: Entry) -> widgets.HBox:
+        """Ask before pulling a very large file onto the disk."""
+        question = widgets.HTML(
+            f"<b>{_escape(entry.name)}</b> is {format_size(entry.size)}. "
+            f"Download it into <code>{_escape(str(self.mirror_dir))}</code>?"
+        )
+        go = widgets.Button(description="Download", button_style="primary", icon="download")
+
+        def download(_):
+            self.output.clear_output()
+            with self.output:
+                items = self._open_items(entry, confirmed=True)
+            self.output.clear_output()
+            with self.output:
+                for item in items:
+                    display(item)
+
+        go.on_click(download)
+        return widgets.HBox([question, go], layout=widgets.Layout(align_items="center"))
+
+    def _file(self, entry: Optional[Entry]) -> Entry:
+        entry = entry if entry is not None else self.selected
+        if entry is None:
+            raise ValueError("No file selected")
+        if entry.is_dir:
+            raise IsADirectoryError(f"{entry.name} is a folder")
+        return entry
 
     def _show_more(self) -> None:
         self._limit += self.page_size
