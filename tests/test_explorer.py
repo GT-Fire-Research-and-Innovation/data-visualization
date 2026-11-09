@@ -248,12 +248,12 @@ def test_clicked_text_shows_in_the_window(explorer, mirror):
     assert "<td>2017</td>" in body and "2 rows." in body
 
 
-def test_clicked_npz_is_only_saved(explorer):
+def test_broken_npz_reports_error(explorer):
     click(explorer, "alpha")
     click(explorer, "train")
-    click(explorer, "p1.npz")
+    click(explorer, "p1.npz")  # the fake's bytes are not a real archive
     _, where, body = pane(explorer)
-    assert "No preview yet" in body and "np.load(" in body and "Saved at" in where
+    assert "Saved, but couldn't show" in body and "Saved at" in where
 
 
 def test_open_file_returns_the_path(explorer, mirror):
@@ -284,10 +284,10 @@ def test_big_files_ask_first(api, mirror):
     assert downloads(api) == []
     explorer._download_btn.click()
     assert downloads(api) == ["train/p4.npz"]
-    assert "No preview yet" in pane(explorer)[2]
     assert explorer._preview_ask.layout.display == "none"
     click(explorer, "p4.npz")  # saved now: opens without asking
-    assert "No preview yet" in pane(explorer)[2] and downloads(api) == ["train/p4.npz"]
+    assert explorer._preview_ask.layout.display == "none"
+    assert downloads(api) == ["train/p4.npz"]
 
 
 def test_failed_download_reports_error(explorer, api):

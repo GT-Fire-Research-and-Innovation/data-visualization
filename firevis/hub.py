@@ -13,10 +13,10 @@ explorer or by any code that knows the path, without another download.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 DEFAULT_ROOT = "https://huggingface.co/SamuelWu318"
@@ -250,3 +250,57 @@ class HubSource:
                 local_dir=str(self.mirror_dir / entry.repo_id),
             )
         return path
+
+    def files_under(self, location: Location) -> List[Entry]:
+        """Every file below a folder, at any depth (names only, nothing downloaded)."""
+        files, todo = [], [location]
+        while todo:
+            for entry in self.list(todo.pop()):
+                (todo.append(entry.location) if entry.is_dir else files.append(entry))
+        return files
+
+    def download_many(self, entries: List[Entry], workers: int = 8,
+                      progress: Optional[Callable[[int, int, int, int], None]] = None) -> List[Path]:
+        """Download several files in parallel (skipping saved ones); return their paths.
+
+        progress(files_done, files_total, bytes_done, bytes_total) is called on
+        the calling thread as files finish, so it can update widgets.
+        """
+        missing = [e for e in entries if not self.is_local(e)]
+        total_bytes = sum(e.size or 0 for e in entries)
+        done = len(entries) - len(missing)
+        done_bytes = total_bytes - sum(e.size or 0 for e in missing)
+        if progress:
+            progress(done, len(entries), done_bytes, total_bytes)
+        if missing:
+            quiet = _quiet_progress_bars()
+            errors = []
+            try:
+                with ThreadPoolExecutor(max(1, min(workers, len(missing)))) as pool:
+                    futures = {pool.submit(self.download, e): e for e in missing}
+                    for future in as_completed(futures):
+                        if future.exception() is not None:
+                            errors.append(future.exception())
+                            continue
+                        done += 1
+                        done_bytes += futures[future].size or 0
+                        if progress:
+                            progress(done, len(entries), done_bytes, total_bytes)
+            finally:
+                quiet()
+            if errors:
+                raise errors[0]
+        return [self.local_path(e) for e in entries]
+
+
+def _quiet_progress_bars() -> Callable[[], None]:
+    """Hide the Hub's own progress bars (parallel bars clutter a notebook); return undo."""
+    try:
+        from huggingface_hub.utils import (are_progress_bars_disabled, disable_progress_bars,
+                                           enable_progress_bars)
+    except ImportError:
+        return lambda: None
+    if are_progress_bars_disabled():
+        return lambda: None
+    disable_progress_bars()
+    return enable_progress_bars

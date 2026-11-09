@@ -17,6 +17,7 @@ file's `Entry`; anything they print or plot shows under the window.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -25,6 +26,8 @@ import ipywidgets as widgets
 from IPython.display import display
 
 from . import viewers
+from .stacks import FireStack, NpzStack, date_of, is_fire_folder
+from .viewer import StackViewer
 from .hub import DATASET, DEFAULT_ROOT, FILE, FOLDER, ROOT, Entry, HubSource, Location
 
 FileCallback = Callable[[Entry], None]
@@ -204,6 +207,46 @@ _CSS = """
   padding: 3px 8px; text-align: left; white-space: nowrap; }
 .fx-md th, .fx-table th { background: var(--fx-chrome); }
 .fx-note { margin: 8px 0; color: var(--fx-muted); font-size: 12px; }
+
+/* image viewer (firevis/viewer.py) */
+.fx-preview.fx-preview-wide { flex: 1 1 100%; border-left: 0;
+  border-top: 1px solid var(--fx-line); }
+.fx-preview-body { align-items: flex-start; }  /* content keeps its height; the body scrolls */
+.fx-viewer { width: 100%; gap: 8px; }
+.fx-viewer > * { flex: 0 0 auto !important; }
+.fx-controls { flex-wrap: wrap; gap: 6px; }
+.fx-window .fx-select select { font-size: 12px; height: 26px; }
+.fx-window .fx-stage { position: relative; display: block !important; width: 100%; max-width: 560px;
+  margin: 0 auto; border: 1px solid var(--fx-line); border-radius: 6px; overflow: hidden;
+  background: var(--fx-zebra); }
+.fx-stage.fx-big { max-width: 960px; }
+.fx-stage img, .fx-image { display: block; width: 100% !important; height: auto !important;
+  image-rendering: pixelated; }
+.fx-window .jupyter-button.fx-corner { position: absolute; top: 6px; height: 24px;
+  line-height: 24px; padding: 0 8px; font-size: 12px;
+  background: rgba(255,255,255,.88) !important; border: 1px solid var(--fx-line) !important;
+  border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.15) !important; }
+.fx-window .jupyter-button.fx-corner-left { left: 6px; }
+.fx-window .jupyter-button.fx-corner-right { right: 6px; }
+.fx-window .jupyter-button.fx-corner.fx-on { background: var(--fx-accent) !important;
+  color: #fff !important; border-color: var(--fx-accent) !important; }
+.fx-legend .widget-html-content { display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: center; gap: 6px 10px; font-size: 12px; color: var(--fx-muted); }
+.fx-bar { display: inline-block; width: 160px; height: 10px; border-radius: 5px;
+  border: 1px solid var(--fx-line); }
+.fx-legend-note { flex-basis: 100%; text-align: center; }
+.fx-legend-error { color: #c4314b; }
+.fx-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+  margin-right: 4px; vertical-align: -1px; border: 1px solid rgba(0,0,0,.15); }
+.fx-class { white-space: nowrap; }
+.fx-nav { align-items: center; justify-content: space-between; max-width: 560px;
+  width: 100%; margin: 0 auto; }
+.fx-viewer-big .fx-nav { max-width: 960px; }
+.fx-window .jupyter-button.fx-arrow { width: 44px; font-size: 16px;
+  background: var(--fx-chrome) !important; border: 1px solid var(--fx-line) !important; }
+.fx-window .jupyter-button.fx-arrow:hover:enabled { background: var(--fx-hover) !important; }
+.fx-date { flex: 1 1 auto; text-align: center; }
+.fx-date .widget-html-content { justify-content: center; text-align: center; }
 .fx-card { margin: 40px 16px; text-align: center; font-size: 13px; line-height: 1.6; }
 .fx-note-error { color: #c4314b; }
 
@@ -341,7 +384,7 @@ class DatasetExplorer:
                 f"<b>{_escape(entry.name)}</b> is {format_size(entry.size)}.<br>"
                 f"Download it into <code>{_escape(str(self.mirror_dir))}</code>?",
                 card=True,
-            ), ask=True)
+            ), ask=lambda: self.open_file(entry, confirmed=True))
             return None
         if not self.source.is_local(entry):
             self._show_preview(entry, viewers.note(
@@ -360,16 +403,72 @@ class DatasetExplorer:
             self._show_preview(entry, body)
             return None
         try:
+            if path.suffix.lower() == ".npz":
+                self._show_viewer(entry, NpzStack(path, dates=self._npz_dates(entry)))
+                return path
             body = viewers.to_html(path)
         except Exception as error:  # unreadable file: say so instead of a blank pane
             body = self._error_html("Saved, but couldn't show", entry, error)
         self._show_preview(entry, body)
         return path
 
+    def open_fire(self, folder: Optional[Entry] = None, confirmed: bool = False) -> Optional[Path]:
+        """Download every GeoTIFF of a fire folder and show them in the viewer.
+
+        A fire folder holds VIIRS_Day/ plus FirePred/ or VIIRS_Night/ (and
+        usually ESRI_LULC/). Saved files are reused; folders whose missing
+        files total more than `confirm_size` ask first. Returns the folder's
+        path in the mirror, or None if it couldn't be opened (or is waiting).
+        """
+        folder = folder or self._entry_for(self.location)
+        if folder is None or not self.is_fire_folder(folder.location):
+            raise ValueError("Not a fire folder (needs VIIRS_Day plus FirePred or VIIRS_Night)")
+        tifs = [e for e in self.source.files_under(folder.location) if e.name.lower().endswith(".tif")]
+        missing = sum(e.size or 0 for e in tifs if not self.source.is_local(e))
+        if missing > self.confirm_size and not confirmed:
+            self._show_preview(folder, viewers.note(
+                f"<b>{_escape(folder.name)}</b> has {len(tifs)} GeoTIFFs; "
+                f"{format_size(missing)} still to download.<br>"
+                f"Download them into <code>{_escape(str(self.mirror_dir))}</code>?", card=True,
+            ), ask=lambda: self.open_fire(folder, confirmed=True), kind="Fire folder")
+            return None
+
+        def progress(done: int, total: int, done_bytes: int, total_bytes: int) -> None:
+            text = (f"Downloading {folder.name}: {done} / {total} files · "
+                    f"{format_size(done_bytes)} of {format_size(total_bytes)}")
+            self._set_status(text + "…")
+            self._show_preview(folder, viewers.note(_escape(text) + "…", card=True), kind="Fire folder")
+
+        try:
+            self.source.download_many(tifs, progress=progress)
+        except Exception as error:
+            self._show_preview(folder, self._error_html("Couldn't download", folder, error),
+                               kind="Fire folder")
+            return None
+        path = self.source.local_path(folder)
+        try:
+            self._show_viewer(folder, FireStack(path), kind="Fire folder")
+        except Exception as error:
+            self._show_preview(folder, self._error_html("Downloaded, but couldn't show", folder, error),
+                               kind="Fire folder")
+            return None
+        self._update_status()
+        for entry in self.entries:
+            if not entry.is_dir:
+                self._refresh_row(entry)
+        return path
+
+    def is_fire_folder(self, location: Location) -> bool:
+        if location[0] is None or not self.source.exists(location):
+            return False
+        return is_fire_folder([e.name for e in self.source.list(location) if e.is_dir])
+
     def close_preview(self) -> None:
         """Hide the preview pane."""
         self._preview.layout.display = "none"
         self._previewing = None
+        self._set_viewer(None)
+        self._wide(False)
 
     def on_file_click(self, callback: FileCallback) -> FileCallback:
         """Register `callback(entry)` to run when a file is clicked.
@@ -484,18 +583,22 @@ class DatasetExplorer:
         head.add_class("fx-preview-head")
         self._preview_path = widgets.HTML()
         self._preview_path.add_class("fx-preview-path")
-        self._preview_body = widgets.HTML()
-        self._preview_body.add_class("fx-preview-body")
+        self._preview_body = widgets.HTML()  # text, tables, messages
+        self._preview_content = widgets.Box([self._preview_body])  # or an image viewer
+        self._preview_content.add_class("fx-preview-body")
         self._download_btn = _button("Download", "fx-primary")
-        self._download_btn.on_click(lambda _: self.open_file(self._previewing, confirmed=True))
+        self._download_btn.on_click(lambda _: self._ask_action and self._ask_action())
         self._preview_ask = widgets.HBox([self._download_btn])
         self._preview_ask.add_class("fx-preview-ask")
+        self._pane_height = f"{height + 27}px"
         self._preview = widgets.VBox(
-            [head, self._preview_path, self._preview_body, self._preview_ask],
-            layout=widgets.Layout(height=f"{height + 27}px", display="none"),
+            [head, self._preview_path, self._preview_content, self._preview_ask],
+            layout=widgets.Layout(height=self._pane_height, display="none"),
         )
         self._preview.add_class("fx-preview")
         self._previewing: Optional[Entry] = None
+        self._viewer: Optional[StackViewer] = None
+        self._ask_action: Optional[Callable[[], object]] = None
 
         body = widgets.HBox([self._sidebar, main, self._preview])
         body.add_class("fx-body")
@@ -637,7 +740,8 @@ class DatasetExplorer:
             return
         entry = self.entries[index]
         if entry.is_dir:
-            self.navigate(entry.location)
+            if self.navigate(entry.location) and self.open_files and self.is_fire_folder(entry.location):
+                self.open_fire(entry)
             return
         previous = self.selected
         self.selected = entry
@@ -653,19 +757,85 @@ class DatasetExplorer:
                 for callback in self._callbacks:
                     callback(entry)
 
-    def _show_preview(self, entry: Entry, body: str, ask: bool = False) -> None:
-        icon, kind = icon_and_kind(entry)
+    def _show_preview(self, entry: Entry, body: Optional[str] = None,
+                      ask: Optional[Callable[[], object]] = None,
+                      viewer: Optional[StackViewer] = None, kind: Optional[str] = None) -> None:
+        """Fill the pane: a title, where the file lives, then HTML or a viewer."""
+        icon, default_kind = icon_and_kind(entry)
         self._preview_title.value = (
             f"{icon} {_escape(entry.name)} <span>· {format_size(entry.size)} · "
-            f"{_escape(kind)}</span>"
+            f"{_escape(kind or default_kind)}</span>"
         )
         where = self.source.local_path(entry)
-        saved = "Saved at" if self.source.is_local(entry) else "Saves to"
+        done = viewer is not None if entry.is_dir else self.source.is_local(entry)
+        saved = "Saved at" if done else "Saves to"
         self._preview_path.value = f"{saved} <code>{_escape(str(where))}</code>"
-        self._preview_body.value = body
+        self._set_viewer(viewer)
+        if viewer is None:
+            self._preview_body.value = body or ""
+        self._ask_action = ask
         self._preview_ask.layout.display = "" if ask else "none"
         self._previewing = entry
         self._preview.layout.display = ""
+
+    def _show_viewer(self, entry: Entry, stack, kind: Optional[str] = None) -> None:
+        self._show_preview(entry, viewer=StackViewer(stack, on_size=self._wide), kind=kind)
+
+    def _set_viewer(self, viewer: Optional[StackViewer]) -> None:
+        """Swap what the pane's body holds, closing the previous viewer's widgets."""
+        if self._viewer is not None and self._viewer is not viewer:
+            self._viewer.close()
+            self._wide(False)
+        self._viewer = viewer
+        self._preview_content.children = [viewer.widget if viewer else self._preview_body]
+        self._fit_pane()
+
+    def _wide(self, on: bool) -> None:
+        """Big viewer: the pane takes the window's full width."""
+        _set_class(self._preview, "fx-preview-wide", on)
+        self._fit_pane()
+
+    def _fit_pane(self) -> None:
+        """Text keeps the list's height and scrolls; an image viewer gets the room it needs."""
+        grow = self._viewer is not None or "fx-preview-wide" in self._preview._dom_classes
+        self._preview.layout.height = None if grow else self._pane_height
+
+    def _entry_for(self, location: Location) -> Optional[Entry]:
+        repo_id, path = location
+        if repo_id is None:
+            return None
+        for entry in self.source.list(self._parent(location) or ROOT):
+            if entry.location == location:
+                return entry
+        return None
+
+    def _npz_dates(self, entry: Entry):
+        """(window, day) -> date for a window archive, from its fire's raw VIIRS_Day files.
+
+        Archive p<id>.npz holds windows of fire <id>; window w starts on day
+        w * ts_interval (window_config.json at the dataset root, default 1).
+        Returns None when the raw fire folder isn't in this account.
+        """
+        fire_id = entry.name[:-4] if entry.name.lower().endswith(".npz") else entry.name
+        fire_id = fire_id[1:] if fire_id.startswith("p") else fire_id
+        days_at = (f"{self.source.owner}/ts-satfire", f"ts-satfire/{fire_id}/VIIRS_Day")
+        if not self.source.exists(days_at):
+            return None
+        days = [date_of(e.name) for e in self.source.list(days_at) if not e.is_dir]
+        interval = 1
+        config = [e for e in self.source.list((entry.repo_id, "")) if e.name == "window_config.json"]
+        if config:
+            try:
+                interval = int(json.loads(self.source.download(config[0]).read_text())
+                               .get("ts_interval", 1))
+            except Exception:
+                pass
+
+        def lookup(window: int, day: int) -> Optional[str]:
+            index = window * interval + day
+            return days[index] if 0 <= index < len(days) else None
+
+        return lookup
 
     def _error_html(self, what: str, entry: Entry, error: Exception) -> str:
         self._set_status(f"⚠️ {what} {entry.name}: {error}", error=True)
