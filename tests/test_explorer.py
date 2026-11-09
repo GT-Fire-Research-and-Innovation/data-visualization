@@ -289,3 +289,28 @@ def test_open_explorer_shows_window_before_loading(monkeypatch, mirror):
     explorer = module.open_explorer("me")
     assert seen == [False]  # the window was on screen before any names loaded
     assert names(explorer) == ["alpha", "beta", "broken"]
+
+
+def test_unreadable_file_reports_error(explorer, monkeypatch):
+    import firevis.explorer as module
+
+    def broken(path, entry):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(module.viewers, "render", broken)
+    click(explorer, "alpha")
+    items = explorer._open_items(explorer.entries[-1])
+    assert "Saved, but couldn't show" in items[0].value
+    assert "fx-error" in explorer._status._dom_classes
+    explorer.open_file(explorer.entries[-1])  # used to crash and leave a blank area
+
+
+def test_gated_dataset_gets_a_hint(explorer, api):
+    class GatedRepoError(Exception):  # same name as huggingface_hub's
+        pass
+
+    api.download_error = GatedRepoError("401 Client Error")
+    click(explorer, "alpha")
+    items = explorer._open_items(explorer.entries[-1])
+    assert "401 Client Error" in items[0].value
+    assert "is gated" in items[1].data and "HF_TOKEN" in items[1].data

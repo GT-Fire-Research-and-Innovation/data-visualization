@@ -76,6 +76,8 @@ def test_npz_and_binary_are_only_saved(tmp_path):
     assert html.escape(repr(str(tmp_path / "p1.npz"))) in npz[1].data
     tif = render(write(tmp_path, "x.tif", b"II*\x00"))
     assert "No preview for .tif files yet" in tif[1].data
+    empty_zip = render(write(tmp_path, "data", b"PK\x05\x06" + b"\x00" * 18))  # real Hub file
+    assert "No preview for this file type yet" in empty_zip[1].data
 
 
 def test_header_uses_entry(tmp_path):

@@ -25,7 +25,7 @@ is used, and saved files get a ✓ in the list.
 The code lives in the `firevis` package here; a Colab notebook only needs:
 
 ```python
-%pip install -q --force-reinstall --no-deps git+https://github.com/GT-Fire-Research-and-Innovation/data-visualization.git
+%pip install -q --force-reinstall --no-deps git+https://github.com/SamuelWu318/data-visualization.git
 
 from firevis import open_explorer
 explorer = open_explorer("https://huggingface.co/SamuelWu318")

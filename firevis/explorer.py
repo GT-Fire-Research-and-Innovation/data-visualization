@@ -284,13 +284,17 @@ class DatasetExplorer:
         self._refresh_row(entry)
         return path
 
-    def open_file(self, entry: Optional[Entry] = None) -> None:
-        """Download a file if needed and show it under the window."""
+    def open_file(self, entry: Optional[Entry] = None, confirmed: bool = False) -> None:
+        """Download a file if needed and show it under the window.
+
+        Files over `confirm_size` show a Download button instead, unless
+        `confirmed` is True or they are already saved.
+        """
         entry = self._file(entry)
         self.output.clear_output()
         with self.output:  # download progress bars land here too
-            items = self._open_items(entry)
-        self.output.clear_output()
+            items = self._open_items(entry, confirmed)
+        self.output.clear_output()  # drop the progress bars
         with self.output:
             for item in items:
                 display(item)
@@ -562,13 +566,27 @@ class DatasetExplorer:
         try:
             path = self.download(entry)
         except Exception as error:  # gated dataset, no network, disk full...
-            self._set_status(f"⚠️ Couldn't download {entry.name}: {error}", error=True)
-            return [widgets.HTML(
-                '<div style="max-width:980px;margin:6px 0;padding:10px 12px;'
-                'border:1px solid #f1c0c8;border-radius:8px;background:#fdf2f4;color:#c4314b">'
-                f"⚠️ Couldn't download <b>{_escape(entry.name)}</b>: {_escape(str(error))}</div>"
-            )]
-        return viewers.render(path, entry)
+            items = self._error("Couldn't download", entry, error)
+            if type(error).__name__ == "GatedRepoError":
+                items.append(viewers._note(
+                    f"{_escape(entry.repo_id)} is gated: accept its terms at "
+                    f'<a href="https://huggingface.co/datasets/{entry.repo_id}" target="_blank">'
+                    f"{_escape(entry.repo_id)}</a>, "
+                    "then set an <code>HF_TOKEN</code> (in Colab: a secret) and reopen."
+                ))
+            return items
+        try:
+            return viewers.render(path, entry)
+        except Exception as error:  # unreadable file: say so instead of a blank area
+            return self._error("Saved, but couldn't show", entry, error)
+
+    def _error(self, what: str, entry: Entry, error: Exception) -> List[object]:
+        self._set_status(f"⚠️ {what} {entry.name}: {error}", error=True)
+        return [widgets.HTML(
+            '<div style="max-width:980px;margin:6px 0;padding:10px 12px;'
+            'border:1px solid #f1c0c8;border-radius:8px;background:#fdf2f4;color:#c4314b">'
+            f"⚠️ {what} <b>{_escape(entry.name)}</b>: {_escape(str(error))}</div>"
+        )]
 
     def _confirm(self, entry: Entry) -> widgets.HBox:
         """Ask before pulling a very large file onto the disk."""
@@ -577,17 +595,7 @@ class DatasetExplorer:
             f"Download it into <code>{_escape(str(self.mirror_dir))}</code>?"
         )
         go = widgets.Button(description="Download", button_style="primary", icon="download")
-
-        def download(_):
-            self.output.clear_output()
-            with self.output:
-                items = self._open_items(entry, confirmed=True)
-            self.output.clear_output()
-            with self.output:
-                for item in items:
-                    display(item)
-
-        go.on_click(download)
+        go.on_click(lambda _: self.open_file(entry, confirmed=True))
         return widgets.HBox([question, go], layout=widgets.Layout(align_items="center"))
 
     def _file(self, entry: Optional[Entry]) -> Entry:

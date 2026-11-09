@@ -94,7 +94,8 @@ def render(path: Path, entry: Optional[Entry] = None) -> List[object]:
             f"<code>np.load({html.escape(repr(str(path)))})</code>."
         ))
     elif kind == "binary":
-        items.append(_note(f"Saved. No preview for {html.escape(suffix(path) or 'this')} files yet."))
+        what = f"{html.escape(suffix(path))} files" if suffix(path) else "this file type"
+        items.append(_note(f"Saved. No preview for {what} yet."))
     elif kind == "table":
         items.extend(_table(path))
     elif kind == "json":
