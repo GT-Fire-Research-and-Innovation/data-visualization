@@ -1,4 +1,4 @@
-"""Fire splitting from fire-research-and-innovation, branch fire-split-zones (commit 06e57f6).
+"""Fire splitting from fire-research-and-innovation, branch fire-split-zones (commit dc90aad).
 
     fire_records.py   SplitSettings, FireEvent, ZoneFile        (firepred/data/fire_records.py)
     fire_tracks.py    track every fire of an archive day by day  (firepred/data/fire_tracks.py)
@@ -15,4 +15,4 @@ firevis/split.py reads an archive and runs these; firevis/split_viewer.py shows 
 
 SOURCE_REPO = "GT-Fire-Research-and-Innovation/fire-research-and-innovation"
 SOURCE_BRANCH = "fire-split-zones"
-SOURCE_COMMIT = "06e57f6"
+SOURCE_COMMIT = "dc90aad"

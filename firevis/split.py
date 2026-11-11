@@ -342,7 +342,7 @@ def split_archive(path, scale_km: float = FIRE_SEPARATION_KM, dates: Optional[Da
     dates:    optional (window, day) -> date lookup, as the explorer has for Hub archives
     """
     days = read_archive(path)
-    settings = split_settings(scale_km)
+    settings = split_settings(scale_km, days.length)  # memory capped at the archive's window length
     try:
         history = burn_history(days.labels, days.night_heat, days.label_sel, days.length, seed_kelvin)
     except ValueError as error:  # targets that repeat pixels

@@ -136,6 +136,10 @@ split.zones.target_owners     # (windows, H, W): the fire of each new target pix
 explorer.open_split(scale_km=4)   # the selected archive, split at another distance
 ```
 
+Tracking remembers at most one window's input days (the archive's window length, 6 for
+`ts-satfire-6-1`), so a fire is in a window's after only if it burned within that window's
+input days; a fire quiet for a whole window ends and comes back as a new fire.
+
 The split code is copied into `firevis/firesplit/` (commit noted in its `__init__.py`) with
 only its imports changed, so a notebook needs neither `firepred` nor torch. It gives the same
 zones, target owners and fires as `firepred` bit for bit.

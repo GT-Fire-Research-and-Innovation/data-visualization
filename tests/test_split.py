@@ -107,6 +107,14 @@ def archive_without(days, tmp_path):
     return path
 
 
+def test_memory_stops_at_the_window_length(tmp_path, archive):
+    """Tracking remembers at most the archive's input days per window: 11 days at 2.25 km become 6, or 5."""
+    assert split_archive(archive).settings.memory_days == 6
+    short = tmp_path / "p5.npz"
+    short.write_bytes(split_window_npz(diverging_fire(), length=5, last_day=12))
+    assert split_archive(short).settings.memory_days == 5 and split_archive(short).length == 5
+
+
 def test_scale_changes_the_split(archive):
     assert split_archive(archive, scale_km=8).splits == 0  # ends never 8 km apart: one fire
 
