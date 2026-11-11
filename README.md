@@ -20,7 +20,7 @@ inside the explorer window (right of the list, or below it in a narrow window); 
 | --- | --- |
 | `.txt`, `.json`, `.md`, `.csv`, `.gitattributes`, other text | Saved, then shown in the preview pane (JSON pretty-printed, Markdown rendered, CSV as a table) |
 | `.png` | Saved, then displayed in the preview pane |
-| `.npz` | Saved, then opened in the image viewer (below) |
+| `.npz` | Saved, then opened in the image viewer (below); window archives also get **✂ Visualize split** (see Fire split) |
 | `.tif`, other binary | Saved only (open the fire folder to see its GeoTIFFs) |
 | Anything over 1 GB (the `.zip` archives, up to 43.7 GB) | The pane asks first, with a Download button |
 
@@ -89,6 +89,57 @@ explorer = open_explorer(mirror_dir="/content/drive/MyDrive/hf_mirror")
 Gated datasets (`ts-satfire-processed`) list without a token but need `HF_TOKEN` (a Colab
 secret works) and accepted terms to download.
 
+## Fire split
+
+This branch (`fire-split`) shows how fire splitting, from the `fire-split-zones` branch of
+[fire-research-and-innovation](https://github.com/GT-Fire-Research-and-Innovation/fire-research-and-innovation),
+breaks a window archive apart. Install it in Colab with:
+
+```python
+%pip install -q rasterio backports.zstd
+%pip install -q --force-reinstall --no-deps git+https://github.com/GT-Fire-Research-and-Innovation/data-visualization.git@fire-split
+
+from firevis import open_explorer
+explorer = open_explorer("https://huggingface.co/SamuelWu318")
+```
+
+Click a window `.npz` (for example `ts-satfire-6-1/train/p21998264.npz`) as usual. Above its
+viewer is a **✂ Visualize split** button. It runs the split, the same one `python -m
+firepred.cli.dataset zones` writes into `zones/p<id>.npz`, and shows:
+
+- **A summary line**: burned pixels and windows, how many fires they became, how many
+  **splits** (fires whose front broke into separate fires) and merges.
+- **Before**: every window's target (the pixels newly burned the next day) overlaid over time,
+  light (first target day) to dark (last), on a faded false-colour image.
+- **After · N fires**: one image per fire with its own burned pixels, overlaid over time on the
+  same crop and colours, so a pixel looks the same in the before and in its after. Each caption
+  says where the fire came from (a new fire, or split from fire k on a date), how it ended (split
+  into fires ..., merged into fire k, or still burning) and its share of the pixels. A last
+  **No fire** image holds the new ignitions no fire reaches (training leaves them out of every
+  fire's loss). The afters add up to the before: every burned pixel is in exactly one.
+
+Background and View (fire area / whole image) work as in the image viewer; ⤢ Big widens the
+pane and ◀ Layers goes back to the archive's layers.
+
+Splitting dates each burn by the first target it is in, so the windows must start every day:
+use a dataset ending in `-1` (`ts-satfire-6-1`, `-NIFC`, `-CROP`). Archives built with another
+interval (`ts-satfire-10-3`) say so instead of splitting. Daily archives (format 3) split too.
+From code:
+
+```python
+from firevis import split_archive
+
+split = split_archive("hf_mirror/SamuelWu318/ts-satfire-6-1/train/p21998264.npz")  # scale_km=2.25
+print(split.summary())        # ... became 13 fires (3 splits, 2 merges); 1,070 pixels (24.4%) ...
+split.fires                   # the fires that own burned pixels (FireEvent: id, kind, parent, days)
+split.zones.target_owners     # (windows, H, W): the fire of each new target pixel, -1 for none
+explorer.open_split(scale_km=4)   # the selected archive, split at another distance
+```
+
+The split code is copied into `firevis/firesplit/` (commit noted in its `__init__.py`) with
+only its imports changed, so a notebook needs neither `firepred` nor torch. It gives the same
+zones, target owners and fires as `firepred` bit for bit.
+
 ## Plotting from Colab
 
 `firevis.load(link)` opens one fire folder or `.npz` as an object you can list and plot from
@@ -140,6 +191,9 @@ both.grid("I4")               # one row per fire, one column per date
 | `firevis/pictures.py` | Draws a layer (one date or overlaid) for both the viewer and the plots |
 | `firevis/fire.py` | `firevis.load(link)`, `FireData` plots and `firevis.compare` |
 | `firevis/explorer.py` | The explorer window (ipywidgets) |
+| `firevis/firesplit/` | Fire splitting, copied from fire-research-and-innovation's `fire-split-zones` |
+| `firevis/split.py` | Reads an archive's targets and night heat, runs the split, builds before / after layers |
+| `firevis/split_viewer.py` | The fire split viewer: Before, After · N fires, captions |
 | `tests/` | `pip install -e '.[test]' && pytest` |
 
 Links: [visualization notebook](https://colab.research.google.com/drive/1eGlHT7b1RYUqGIe4Wtf9xmc2DQlJlQ7N?usp=sharing) ·

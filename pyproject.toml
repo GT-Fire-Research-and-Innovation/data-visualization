@@ -7,6 +7,7 @@ dependencies = [
     "huggingface_hub>=0.20",
     "ipywidgets>=7.6",
     "numpy",
+    "scipy",  # fire splitting (firevis/firesplit)
 ]
 
 [project.optional-dependencies]
@@ -20,7 +21,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["firevis*"]
+include = ["firevis*"]  # firevis.firesplit too
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

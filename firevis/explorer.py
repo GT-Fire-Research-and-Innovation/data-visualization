@@ -11,6 +11,10 @@ files (txt, json, md, csv, ...), PNG images and NumPy archives are shown in a
 preview pane inside the window. Other binary files are saved. Files over 1 GB
 ask first.
 
+A window archive's preview has a "✂ Visualize split" button: it splits the
+archive into its fires with the fire-split code (firevis/split.py) and shows
+the burned pixels before, and each fire's after, overlaid over time.
+
 Functions registered with `explorer.on_file_click(fn)` run after that, with the
 file's `Entry`; anything they print or plot shows under the window.
 """
@@ -25,6 +29,8 @@ import ipywidgets as widgets
 from IPython.display import display
 
 from . import viewers
+from .split import FireSplit, SplitError, can_split, split_archive
+from .split_viewer import SplitViewer
 from .stacks import FireStack, NpzStack, is_fire_folder
 from .viewer import StackViewer
 from .fire import npz_date_lookup
@@ -246,6 +252,29 @@ _CSS = """
 .fx-card { margin: 40px 16px; text-align: center; font-size: 13px; line-height: 1.6; }
 .fx-note-error { color: #c4314b; }
 
+/* fire split (firevis/split_viewer.py) */
+.fx-preview-actions { flex: 0 0 auto; padding: 8px 12px 0; gap: 6px; }
+.fx-split-summary .widget-html-content { display: block; font-size: 13px; line-height: 1.5; }
+.fx-split-detail, .fx-split-note .widget-html-content { font-size: 12px; color: var(--fx-muted);
+  line-height: 1.5; }
+.fx-split-note .widget-html-content { display: block; text-align: center; max-width: 560px;
+  margin: 0 auto; }
+.fx-window .jupyter-button.fx-tab { width: auto; padding: 0 12px;
+  background: var(--fx-chrome) !important; border: 1px solid var(--fx-line) !important; }
+.fx-window .jupyter-button.fx-tab:hover { background: var(--fx-hover) !important; }
+.fx-window .jupyter-button.fx-tab.fx-on { background: var(--fx-accent) !important;
+  color: #fff !important; border-color: var(--fx-accent) !important; }
+.fx-split-grid { display: flex !important; flex-wrap: wrap; gap: 10px; width: 100%; }
+.fx-split-card { flex: 1 1 200px !important; max-width: 280px; min-width: 0;
+  border: 1px solid var(--fx-line); border-radius: 6px; overflow: hidden; background: #fff; }
+.fx-viewer-big .fx-split-card { max-width: 320px; }
+.fx-split-card img { display: block; width: 100% !important; height: auto !important;
+  image-rendering: pixelated; background: var(--fx-zebra); }
+.fx-split-caption .widget-html-content { display: block; padding: 6px 8px; font-size: 12px;
+  line-height: 1.45; white-space: normal; }
+.fx-split-when { color: var(--fx-muted); }
+.fx-window .jupyter-button.fx-split-back { width: auto; padding: 0 12px; font-size: 13px; }
+
 /* status bar */
 .fx-status { height: 24px; line-height: 24px; padding: 0 12px; font-size: 12px;
   color: var(--fx-muted); background: var(--fx-chrome);
@@ -400,7 +429,8 @@ class DatasetExplorer:
             return None
         try:
             if path.suffix.lower() == ".npz":
-                self._show_viewer(entry, NpzStack(path, dates=self._npz_dates(entry)))
+                self._show_viewer(entry, NpzStack(path, dates=self._npz_dates(entry)),
+                                  split=can_split(path))
                 return path
             body = viewers.to_html(path)
         except Exception as error:  # unreadable file: say so instead of a blank pane
@@ -453,6 +483,52 @@ class DatasetExplorer:
             if not entry.is_dir:
                 self._refresh_row(entry)
         return path
+
+    def open_split(self, entry: Optional[Entry] = None, scale_km: Optional[float] = None,
+                   mode: str = "after") -> Optional[FireSplit]:
+        """Split a window archive into its fires and show before / after in the pane.
+
+        The archive is downloaded first if needed. Splitting reads only its
+        targets, the first window's night I4 and two false-colour days, then
+        runs firevis/firesplit (fire-split-zones). Returns the FireSplit, or
+        None when the archive can't be split (the pane says why).
+        `scale_km` overrides the 2.25 km separation distance.
+        """
+        entry = self._file(entry)
+        if not entry.name.lower().endswith(".npz"):
+            raise ValueError(f"{entry.name} isn't an .npz archive")
+        try:
+            path = self.download(entry)
+        except Exception as error:
+            self._show_preview(entry, self._error_html("Couldn't download", entry, error))
+            return None
+        options = {} if scale_km is None else {"scale_km": scale_km}
+        key = (path, scale_km)
+        if self._last_split is not None and self._last_split[0] == key:
+            result = self._last_split[1]  # back from the layers: no need to split again
+        else:
+            self._set_status(f"Splitting {entry.name} into fires…")
+            self._show_preview(entry, viewers.note(
+                f"Splitting <b>{_escape(entry.name)}</b> into fires…", card=True), kind="Fire split")
+            try:
+                result = split_archive(path, dates=self._npz_dates(entry), **options)
+            except SplitError as error:
+                self._set_status(f"⚠️ Can't split {entry.name}: {error}", error=True)
+                self._show_preview(entry, viewers.note(
+                    f"⚠️ Can't split <b>{_escape(entry.name)}</b> into fires:<br>{_escape(str(error))}",
+                    card=True, error=True), ask=lambda: self.open_file(entry), ask_label="◀ Layers",
+                    kind="Fire split")
+                return None
+            except Exception as error:
+                self._show_preview(entry, self._error_html("Couldn't split", entry, error),
+                                   ask=lambda: self.open_file(entry), ask_label="◀ Layers",
+                                   kind="Fire split")
+                return None
+            self._last_split = (key, result)
+        viewer = SplitViewer(result, on_size=self._wide, on_back=lambda: self.open_file(entry), mode=mode)
+        self._show_preview(entry, viewer=viewer, kind="Fire split")
+        self._set_status(result.summary())
+        return result
 
     def is_fire_folder(self, location: Location) -> bool:
         if location[0] is None or not self.source.exists(location):
@@ -586,14 +662,22 @@ class DatasetExplorer:
         self._download_btn.on_click(lambda _: self._ask_action and self._ask_action())
         self._preview_ask = widgets.HBox([self._download_btn])
         self._preview_ask.add_class("fx-preview-ask")
+        # Shown above a window archive's viewer: split it into its fires.
+        self._split_btn = _button("✂ Visualize split", "fx-primary",
+                                  tooltip="Split this archive into its fires (fire-split-zones)")
+        self._split_btn.on_click(lambda _: self._previewing and self.open_split(self._previewing))
+        self._preview_actions = widgets.HBox([self._split_btn], layout=widgets.Layout(display="none"))
+        self._preview_actions.add_class("fx-preview-actions")
         self._pane_height = f"{height + 27}px"
         self._preview = widgets.VBox(
-            [head, self._preview_path, self._preview_content, self._preview_ask],
+            [head, self._preview_path, self._preview_actions, self._preview_content,
+             self._preview_ask],
             layout=widgets.Layout(height=self._pane_height, display="none"),
         )
         self._preview.add_class("fx-preview")
         self._previewing: Optional[Entry] = None
-        self._viewer: Optional[StackViewer] = None
+        self._viewer = None  # a StackViewer or SplitViewer
+        self._last_split = None  # ((path, scale_km), FireSplit) of the last split shown
         self._ask_action: Optional[Callable[[], object]] = None
 
         body = widgets.HBox([self._sidebar, main, self._preview])
@@ -755,8 +839,12 @@ class DatasetExplorer:
 
     def _show_preview(self, entry: Entry, body: Optional[str] = None,
                       ask: Optional[Callable[[], object]] = None,
-                      viewer: Optional[StackViewer] = None, kind: Optional[str] = None) -> None:
-        """Fill the pane: a title, where the file lives, then HTML or a viewer."""
+                      viewer=None, kind: Optional[str] = None,
+                      split: bool = False, ask_label: str = "Download") -> None:
+        """Fill the pane: a title, where the file lives, then HTML or a viewer.
+
+        split: show the "✂ Visualize split" button (window archives).
+        """
         icon, default_kind = icon_and_kind(entry)
         self._preview_title.value = (
             f"{icon} {_escape(entry.name)} <span>· {format_size(entry.size)} · "
@@ -770,14 +858,16 @@ class DatasetExplorer:
         if viewer is None:
             self._preview_body.value = body or ""
         self._ask_action = ask
+        self._download_btn.description = ask_label
         self._preview_ask.layout.display = "" if ask else "none"
+        self._preview_actions.layout.display = "" if split else "none"
         self._previewing = entry
         self._preview.layout.display = ""
 
-    def _show_viewer(self, entry: Entry, stack, kind: Optional[str] = None) -> None:
-        self._show_preview(entry, viewer=StackViewer(stack, on_size=self._wide), kind=kind)
+    def _show_viewer(self, entry: Entry, stack, kind: Optional[str] = None, split: bool = False) -> None:
+        self._show_preview(entry, viewer=StackViewer(stack, on_size=self._wide), kind=kind, split=split)
 
-    def _set_viewer(self, viewer: Optional[StackViewer]) -> None:
+    def _set_viewer(self, viewer) -> None:
         """Swap what the pane's body holds, closing the previous viewer's widgets."""
         if self._viewer is not None and self._viewer is not viewer:
             self._viewer.close()

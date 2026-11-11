@@ -71,3 +71,77 @@ def fire_folder(fire_id="42", esri=True):
             np.where(rng.random((1, SIZE * 4, SIZE * 4)) > 0.5, 2.0, 11.0), ["lulc_classification"],
             pixel=0.0034 / 4)  # finer grid over the same area, like the 10 m originals
     return files
+
+
+# ----- archives for fire splitting --------------------------------------------
+
+
+def _npz_bytes(arrays, zstd=False) -> bytes:
+    buffer = io.BytesIO()
+    method = zipfile.ZIP_ZSTANDARD if zstd else zipfile.ZIP_DEFLATED
+    with zipfile.ZipFile(buffer, "w", compression=method) as z:
+        for name, array in arrays.items():
+            member = io.BytesIO()
+            np.lib.format.write_array(member, np.asarray(array))
+            z.writestr(f"{name}.npy", member.getvalue())
+    return buffer.getvalue()
+
+
+def diverging_fire(size=64):
+    """The burn-day map of firepred's split test: a front that breaks in two on day 10.
+
+    Days 6..11 burn (window length 6, so the targets are days 6..12): one fire
+    spreading both ways from columns 28..35, whose two ends end up far apart.
+    """
+    days = np.full((size, size), -1, np.int16)
+    rows = slice(30, 34)
+    for day, (first, last) in {6: (28, 35), 7: (24, 27), 8: (20, 23), 9: (16, 19), 10: (12, 15),
+                               11: (8, 11)}.items():
+        days[rows, first:last + 1] = day
+    for day, (first, last) in {7: (36, 39), 8: (40, 43), 9: (44, 47), 10: (48, 51), 11: (52, 55)}.items():
+        days[rows, first:last + 1] = day
+    return days
+
+
+def _frames(burn_day, num_days, channels=27):
+    """One (channels, H, W) frame per day; night I4 stays cool, so there are no heat seeds."""
+    rng = np.random.default_rng(2)
+    frames = rng.random((channels, num_days) + burn_day.shape, dtype=np.float32)
+    frames[6] = 290.0
+    return frames
+
+
+def split_window_npz(burn_day, length=6, last_day=12, interval=1, zstd=False) -> bytes:
+    """A format-2 window archive whose targets are the pixels of each day of `burn_day`."""
+    starts = range(0, last_day - length + 1, interval)
+    frames = _frames(burn_day, last_day)
+    arrays = {"format_version": np.array(2), "num_windows": np.array(len(starts))}
+    for w, start in enumerate(starts):
+        arrays[f"data_{w:03d}"] = frames[:, start:start + length]
+        arrays[f"label_{w:03d}"] = (burn_day == start + length).astype(np.float32)
+    return _npz_bytes(arrays, zstd)
+
+
+def split_daily_npz(burn_day, length=6, last_day=12, block_days=6) -> bytes:
+    """The same fire as a daily archive (format 3), as firepred's convert-daily writes it."""
+    frames = _frames(burn_day, last_day)
+    channels, num_days = frames.shape[:2]
+    target_days = np.arange(length, last_day + 1, dtype=np.int16)
+    arrays = {
+        "format_version": np.array(3, np.int16), "num_windows": np.array(len(target_days), np.int32),
+        "ts_length": np.array(length, np.int16), "ts_interval": np.array(1, np.int16),
+        "num_days": np.array(num_days, np.int32), "block_days": np.array(block_days, np.int16),
+        "frame_shape": np.array((channels,) + burn_day.shape, np.int32),
+        "static_channels": np.array([19], np.int16),
+    }
+    frames[19] = frames[19, :1]  # elevation: the same every day, stored once
+    for c in range(channels):
+        if c == 19:
+            arrays["static_c19"] = frames[19, 0]
+            continue
+        for first in range(0, num_days, block_days):
+            arrays[f"days_c{c:02d}_{first:03d}"] = frames[c, first:first + block_days]
+    arrays["target_days"] = target_days
+    arrays["targets"] = np.packbits(np.stack([burn_day == d for d in target_days]), axis=-1)
+    arrays["target_dtype"] = np.array("float32")
+    return _npz_bytes(arrays)
