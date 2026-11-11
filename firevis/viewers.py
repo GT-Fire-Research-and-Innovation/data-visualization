@@ -6,11 +6,12 @@ printing or `display()` from a click handler, which Colab may not show.
 
 Text files (txt, json, md, csv, yaml, ...) are shown as you'd expect: JSON
 pretty-printed, Markdown rendered, CSV as a table, everything else as plain
-text. NumPy archives and other binary files are only downloaded for now.
+text. PNG files are shown as images. Other binary files have a saved-file note.
 """
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 from pathlib import Path
@@ -27,7 +28,7 @@ TEXT = {
     ".xml", ".sh", ".gitattributes", ".gitignore",
 } | MARKDOWN | TABLES
 BINARY = {
-    ".tif", ".tiff", ".png", ".jpg", ".jpeg", ".zip", ".gz", ".zst", ".tar",
+    ".tif", ".tiff", ".jpg", ".jpeg", ".zip", ".gz", ".zst", ".tar",
     ".nc", ".h5", ".hdf5", ".parquet", ".pt", ".pth", ".bin",
 } | NUMPY
 
@@ -54,10 +55,12 @@ def looks_like_text(path: Path, sample: int = 4096) -> bool:
 
 
 def file_kind(path: Path) -> str:
-    """One of "numpy", "markdown", "json", "table", "text" or "binary"."""
+    """One of "numpy", "png", "markdown", "json", "table", "text" or "binary"."""
     ext = suffix(path)
     if ext in NUMPY:
         return "numpy"
+    if ext == ".png":
+        return "png"
     if ext in MARKDOWN:
         return "markdown"
     if ext == ".json":
@@ -75,6 +78,8 @@ def to_html(path: Path) -> str:
     """HTML showing the contents of a downloaded file."""
     path = Path(path)
     kind = file_kind(path)
+    if kind == "png":
+        return _png(path)
     if kind == "numpy":
         return note(
             "NumPy archive saved. No preview yet.<br>Load it with "
@@ -124,6 +129,15 @@ def _pre(text: str) -> str:
 
 def _cut_note(cut: str) -> str:
     return note(cut) if cut else ""
+
+
+def _png(path: Path) -> str:
+    data = path.read_bytes()
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("File does not have a PNG signature")
+    encoded = base64.b64encode(data).decode("ascii")
+    return (f'<img class="fx-preview-png" src="data:image/png;base64,{encoded}" '
+            f'alt="{html.escape(path.name)}">')
 
 
 def _read_text(path: Path):

@@ -7,8 +7,8 @@ Every file and folder name loads when the explorer opens, so browsing needs no
 further requests. Clicking a folder opens it. Clicking a file opens it: the
 first time, it is downloaded into a local mirror of the Hub layout
 (`hf_mirror/<owner>/<dataset>/<path>`); later clicks use that saved copy. Text
-files (txt, json, md, csv, ...) are shown in a preview pane inside the window;
-NumPy archives and other binary files are only saved for now. Files over 1 GB
+files (txt, json, md, csv, ...), PNG images and NumPy archives are shown in a
+preview pane inside the window. Other binary files are saved. Files over 1 GB
 ask first.
 
 Functions registered with `explorer.on_file_click(fn)` run after that, with the
@@ -178,6 +178,7 @@ _CSS = """
 .fx-preview-path { padding: 6px 12px; font-size: 11px; color: var(--fx-muted);
   word-break: break-all; border-bottom: 1px solid var(--fx-line); }
 .fx-preview-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px 12px; }
+.fx-preview-png { display: block; max-width: 100%; height: auto; }
 .fx-preview-ask { padding: 0 12px 12px; justify-content: center; }
 .fx-window .jupyter-button.fx-primary { width: auto; padding: 0 14px;
   background: var(--fx-accent) !important; color: #fff !important; }

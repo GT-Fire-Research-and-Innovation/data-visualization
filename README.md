@@ -19,6 +19,7 @@ inside the explorer window (right of the list, or below it in a narrow window); 
 | Clicked file | What happens |
 | --- | --- |
 | `.txt`, `.json`, `.md`, `.csv`, `.gitattributes`, other text | Saved, then shown in the preview pane (JSON pretty-printed, Markdown rendered, CSV as a table) |
+| `.png` | Saved, then displayed in the preview pane |
 | `.npz` | Saved, then opened in the image viewer (below) |
 | `.tif`, other binary | Saved only (open the fire folder to see its GeoTIFFs) |
 | Anything over 1 GB (the `.zip` archives, up to 43.7 GB) | The pane asks first, with a Download button |

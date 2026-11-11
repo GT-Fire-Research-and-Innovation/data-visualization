@@ -1,7 +1,11 @@
+from base64 import b64encode
+
+import numpy as np
 import pytest
 
 from firevis.explorer import DatasetExplorer, format_size, icon_and_kind
 from firevis.hub import FILE, ROOT, Entry, HubSource
+from firevis.render import png_bytes
 
 from fakes import FakeApi
 
@@ -246,6 +250,26 @@ def test_clicked_text_shows_in_the_window(explorer, mirror):
     title, _, body = pane(explorer)
     assert "fire_all.csv" in title and 'class="dataframe fx-table"' in body
     assert "<td>2017</td>" in body and "2 rows." in body
+
+
+def test_clicked_png_shows_in_the_window(mirror):
+    name = "map.PNG"
+    image = png_bytes(np.zeros((2, 3, 3), dtype=np.uint8))
+    api = FakeApi(tree={"me/alpha": [f"{name}:{len(image)}"]}, contents={name: image})
+    explorer = DatasetExplorer(source=HubSource("me", api=api, mirror_dir=mirror))
+
+    click(explorer, "alpha")
+    click(explorer, name)
+
+    title, where, body = pane(explorer)
+    assert name in title and "PNG image" in title
+    assert "Saved at" in where
+    assert f'src="data:image/png;base64,{b64encode(image).decode("ascii")}"' in body
+    assert f'alt="{name}"' in body
+
+    click(explorer, name)
+    assert downloads(api) == [name]
+    assert pane(explorer)[2] == body
 
 
 def test_broken_npz_reports_error(explorer):
