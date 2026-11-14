@@ -43,9 +43,10 @@ def test_windows_that_skip_days_are_refused(tmp_path):
         split_archive(path)
 
 
-def test_daily_archive_gives_the_same_split(tmp_path, archive):
+@pytest.mark.parametrize("version", [3, 4])  # 4: members named by channel; 3: by number
+def test_daily_archive_gives_the_same_split(tmp_path, archive, version):
     daily = tmp_path / "daily.npz"
-    daily.write_bytes(split_daily_npz(diverging_fire()))
+    daily.write_bytes(split_daily_npz(diverging_fire(), version=version))
     a, b = split_archive(archive), split_archive(daily)
     assert np.array_equal(a.days.labels, b.days.labels)
     assert np.array_equal(a.days.night_heat, b.days.night_heat)

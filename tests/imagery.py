@@ -122,25 +122,42 @@ def split_window_npz(burn_day, length=6, last_day=12, interval=1, zstd=False) ->
     return _npz_bytes(arrays, zstd)
 
 
-def split_daily_npz(burn_day, length=6, last_day=12, block_days=6) -> bytes:
-    """The same fire as a daily archive (format 3), as firepred's convert-daily writes it."""
+# firepred's STORED_CHANNEL_KEYS: the names format-4 daily archives give each channel's members.
+DAILY_CHANNEL_NAMES = (
+    "viirs_i1", "viirs_i2", "viirs_i3", "viirs_i4_running_max", "viirs_i5_running_max", "viirs_m11",
+    "viirs_i4_night_running_max", "viirs_i5_night_running_max", "ndvi", "evi", "total_precipitation",
+    "wind_speed", "wind_direction", "min_temperature", "max_temperature", "energy_release_component",
+    "specific_humidity", "slope", "aspect", "elevation", "pdsi", "land_cover", "forecast_total_precipitation",
+    "forecast_wind_speed", "forecast_wind_direction", "forecast_temperature", "forecast_specific_humidity",
+)
+
+
+def split_daily_npz(burn_day, length=6, last_day=12, block_days=6, version=4) -> bytes:
+    """The same fire as a daily archive, as firepred's convert-daily writes it.
+
+    Format 4 names members by channel (days_viirs_i1_000, static_elevation) and
+    lists the names in channel_names; format 3 names them by number (days_c00_000).
+    """
     frames = _frames(burn_day, last_day)
     channels, num_days = frames.shape[:2]
     target_days = np.arange(length, last_day + 1, dtype=np.int16)
+    names = list(DAILY_CHANNEL_NAMES) if version == 4 else [f"c{c:02d}" for c in range(channels)]
     arrays = {
-        "format_version": np.array(3, np.int16), "num_windows": np.array(len(target_days), np.int32),
+        "format_version": np.array(version, np.int16), "num_windows": np.array(len(target_days), np.int32),
         "ts_length": np.array(length, np.int16), "ts_interval": np.array(1, np.int16),
         "num_days": np.array(num_days, np.int32), "block_days": np.array(block_days, np.int16),
         "frame_shape": np.array((channels,) + burn_day.shape, np.int32),
         "static_channels": np.array([19], np.int16),
     }
+    if version == 4:
+        arrays["channel_names"] = np.array(names)
     frames[19] = frames[19, :1]  # elevation: the same every day, stored once
     for c in range(channels):
         if c == 19:
-            arrays["static_c19"] = frames[19, 0]
+            arrays[f"static_{names[19]}"] = frames[19, 0]
             continue
         for first in range(0, num_days, block_days):
-            arrays[f"days_c{c:02d}_{first:03d}"] = frames[c, first:first + block_days]
+            arrays[f"days_{names[c]}_{first:03d}"] = frames[c, first:first + block_days]
     arrays["target_days"] = target_days
     arrays["targets"] = np.packbits(np.stack([burn_day == d for d in target_days]), axis=-1)
     arrays["target_dtype"] = np.array("float32")

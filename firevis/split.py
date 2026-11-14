@@ -41,7 +41,7 @@ from .stacks import MASK, RGB, STORED_CHANNEL_NAMES, Layer, Npz, Stack, fire_box
 DateLookup = Callable[[int, int], Optional[str]]  # (window, day) -> date, as for NpzStack
 
 FALSE_COLOUR = [2, 1, 0]  # VIIRS I3, I2, I1 in a 27-channel archive
-DAILY_MARKER = "num_days"  # only daily archives (format 3) have it
+DAILY_MARKER = "num_days"  # only daily archives (formats 3 and 4) have it
 
 
 class SplitError(ValueError):
@@ -162,14 +162,18 @@ def _read_windows(npz: Npz, name: str) -> ArchiveDays:
 
 
 def _read_daily(npz: Npz, name: str) -> ArchiveDays:
-    """A daily archive (format 3): every day once, in blocks, plus packed targets.
+    """A daily archive (format 3 or 4): every day once, in blocks, plus packed targets.
 
     Read as the windows that start every day at the archive's own length, like
-    firepred's open_daily_windows does for zones.
+    firepred's open_daily_windows does for zones. Format 4 names each channel's
+    members by what it holds (days_viirs_i1_000, static_elevation) and lists the
+    names in channel_names; format 3 named them by number (days_c00_000).
     """
     read = lambda key: int(np.asarray(npz[key]).item())  # noqa: E731
     length, num_days, block_days = read("ts_length"), read(DAILY_MARKER), read("block_days")
     channels, height, width = (int(n) for n in npz["frame_shape"])
+    names = ([str(n) for n in npz["channel_names"]] if "channel_names" in npz.files
+             else [f"c{c:02d}" for c in range(channels)])
     static = {int(c) for c in npz["static_channels"]}
     target_days = [int(d) for d in npz["target_days"]]
     index = {day: i for i, day in enumerate(target_days)}
@@ -185,13 +189,13 @@ def _read_daily(npz: Npz, name: str) -> ArchiveDays:
 
     def days(channel: int, start: int, stop: int) -> np.ndarray:
         if channel in static:
-            frame = npz[f"static_c{channel:02d}"]
+            frame = npz[f"static_{names[channel]}"]
             return np.repeat(frame[None], stop - start, axis=0).astype(np.float32)
         out = np.empty((stop - start, height, width), np.float32)
         day = start
         while day < stop:
             first_day = day - day % block_days
-            block = npz[f"days_c{channel:02d}_{first_day:03d}"]
+            block = npz[f"days_{names[channel]}_{first_day:03d}"]
             end = min(first_day + len(block), stop)
             out[day - start:end - start] = block[day - first_day:end - first_day]
             day = end
