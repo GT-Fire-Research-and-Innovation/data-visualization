@@ -10,10 +10,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# GeoTIFF fire folders need rasterio; window .npz archives use Zstandard, which
-# Python < 3.14 reads through backports.zstd. Colab: %pip install rasterio backports.zstd
-imagery = ["rasterio", "pillow", "matplotlib", "backports.zstd; python_version<'3.14'"]
-test = ["pytest", "pandas", "rasterio", "pillow", "matplotlib", "backports.zstd; python_version<'3.14'"]
+# GeoTIFFs need rasterio; window .npz archives use Zstandard, which Python < 3.14 reads
+# through backports.zstd; NetCDF4 files (GOES, HRRR) need netCDF4 under xarray; maps use
+# matplotlib. Colab has xarray, pandas and matplotlib: %pip install rasterio backports.zstd netCDF4
+imagery = ["rasterio", "pillow", "matplotlib", "pandas", "xarray", "netCDF4",
+           "backports.zstd; python_version<'3.14'"]
+test = ["pytest", "pandas", "rasterio", "pillow", "matplotlib", "xarray", "scipy",
+        "backports.zstd; python_version<'3.14'"]
 
 [build-system]
 requires = ["setuptools>=61"]

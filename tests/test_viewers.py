@@ -19,7 +19,13 @@ def write(tmp_path, name, data):
     ("fire_all.csv", "a,b\n1,2\n", "table"),
     ("notes.txt", "hi", "text"),
     (".gitattributes", "*.npz filter=lfs", "text"),
-    ("x.tif", b"II*\x00", "binary"),
+    ("x.tif", b"II*\x00", "geotiff"),
+    ("x.h5", b"\x89HDF", "binary"),
+    ("gridmet_vs.nc", b"CDF\x01", "netcdf"),
+    ("records.geojson", "{}", "geojson"),
+    ("VIIRS_SNPP_SP.csv.gz", b"\x1f\x8b", "table"),
+    ("osm_2017-01-01.osm.pbf", b"\x00\x00\x00\x0d", "osm"),
+    ("ics209plus-wildfire.zip", b"PK\x03\x04", "zip"),
     ("data", "some text", "text"),          # no extension: sniffed
     ("blob", b"\x00\x01\x02", "binary"),
     ("odd.xyz", "plain words", "text"),
@@ -86,6 +92,6 @@ def test_csv_is_a_table(tmp_path, monkeypatch):
 def test_npz_and_binary_are_only_saved(tmp_path):
     body = to_html(write(tmp_path, "p1.npz", b"PK\x03\x04"))
     assert "No preview yet" in body and "np.load(" in body and "p1.npz" in body
-    assert "No preview for .tif files yet" in to_html(write(tmp_path, "x.tif", b"II*\x00"))
+    assert "No preview for .h5 files yet" in to_html(write(tmp_path, "x.h5", b"\x89HDF"))
     empty_zip = to_html(write(tmp_path, "data", b"PK\x05\x06" + b"\x00" * 18))  # real Hub file
     assert "No preview for this file type yet" in empty_zip

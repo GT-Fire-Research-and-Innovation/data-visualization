@@ -18,11 +18,23 @@ inside the explorer window (right of the list, or below it in a narrow window); 
 
 | Clicked file | What happens |
 | --- | --- |
-| `.txt`, `.json`, `.md`, `.csv`, `.gitattributes`, other text | Saved, then shown in the preview pane (JSON pretty-printed, Markdown rendered, CSV as a table) |
+| `.txt`, `.json`, `.md`, `.gitattributes`, other text | Saved, then shown in the preview pane (JSON pretty-printed, Markdown rendered) |
+| `.csv`, `.csv.gz` | A table (first 200 rows); with latitude/longitude columns (FIRMS) also a map of the points, coloured by date |
+| `.geojson` | A map of every feature, coloured by its date (perimeter time, fire year, ...) earliest light to latest dark, and the attribute table. Files over 64 MB show their first 5,000 features |
+| `.nc` (NetCDF3 and NetCDF4) | The image viewer: a layer per gridded variable, stepped or overlaid over its time axis, north up; codes such as GOES `Mask`/`DQF` as named classes |
+| `.tif` | The image viewer: a layer per band, read at up to 1024 px; class bands with a legend (LANDFIRE FBFM40 with the Scott & Burgan fuel model names) |
+| `.osm.pbf` | Node, way and relation counts and a map of roads, railways, power lines, buildings and water, decoded without osmium |
+| `.zip` | The list of its files |
 | `.png` | Saved, then displayed in the preview pane |
 | `.npz` | Saved, then opened in the image viewer (below) |
-| `.tif`, other binary | Saved only (open the fire folder to see its GeoTIFFs) |
+| Other binary | Saved only |
 | Anything over 1 GB (the `.zip` archives, up to 43.7 GB) | The pane asks first, with a Download button |
+
+Every format of [FAH-2014-2025](https://huggingface.co/datasets/SamuelWu318/FAH-2014-2025)
+(Fires and Humans: per-fire GRIDMET, GOES and HRRR NetCDF, LANDFIRE and DEM GeoTIFFs,
+perimeter / suppression / history GeoJSON, FIRMS `.csv.gz`, ICS-209 tables, OSM extracts)
+opens this way. With FAH in the account the first load lists about 80,000 names, so it takes
+longer than before.
 
 ### Fire folders and window archives
 
@@ -53,7 +65,7 @@ day at a time), **top-right** makes the image big (the pane then spans the windo
 The code lives in the `firevis` package here; a Colab notebook only needs:
 
 ```python
-%pip install -q rasterio backports.zstd
+%pip install -q rasterio backports.zstd netCDF4
 %pip install -q --force-reinstall --no-deps git+https://github.com/SamuelWu318/data-visualization.git
 
 from firevis import open_explorer
@@ -133,10 +145,12 @@ both.grid("I4")               # one row per fire, one column per date
 | Path | What |
 | --- | --- |
 | `firevis/hub.py` | Loads every dataset's file and folder names; downloads files into the mirror |
-| `firevis/viewers.py` | Turns an opened file into HTML for the preview pane |
-| `firevis/stacks.py` | Reads fire folders (GeoTIFFs) and `.npz` files into layers of dated frames |
-| `firevis/render.py` | Colour ramps, overlays, land-cover palettes, PNG encoding (numpy only) |
-| `firevis/viewer.py` | The image viewer: layer picker, corners, legend, ◀ date ▶ |
+| `firevis/viewers.py` | Turns an opened file into HTML for the preview pane (text, tables, GeoJSON, OSM, ZIP) |
+| `firevis/geo.py` | GeoJSON reading (streamed when huge), dates of features, maps of features and points |
+| `firevis/pbf.py` | OpenStreetMap `.osm.pbf` decoding (header, counts, roads/buildings/water) without osmium |
+| `firevis/stacks.py` | Reads fire folders, single GeoTIFFs, NetCDF and `.npz` files into layers of dated frames |
+| `firevis/render.py` | Colour ramps, overlays, land-cover / fuel-model / GOES palettes, PNG encoding (numpy only) |
+| `firevis/viewer.py` | The image viewer: layer picker, corners, legend, ◀ date ▶ and a slider for long series |
 | `firevis/pictures.py` | Draws a layer (one date or overlaid) for both the viewer and the plots |
 | `firevis/fire.py` | `firevis.load(link)`, `FireData` plots and `firevis.compare` |
 | `firevis/explorer.py` | The explorer window (ipywidgets) |

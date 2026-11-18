@@ -26,7 +26,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .render import mask_of
+from .render import looks_like_classes, mask_of
 
 # Layer styles.
 MASK = "mask"  # 0/1 fire pixels
@@ -145,6 +145,7 @@ class Stack:
 
     title: str
     windows: List[str] = field(default_factory=lambda: [""])  # labels; one = no picker
+    description: str = ""  # one line shown above the image (sizes, grid, units)
 
     def layers(self, window: int = 0) -> List[Layer]:
         raise NotImplementedError
@@ -495,3 +496,152 @@ class NpzStack(Stack):
 
     def close(self) -> None:
         self.npz.close()
+
+
+# ----- single GeoTIFF files -----------------------------------------------------
+
+
+MAX_SIDE = 1024  # rasters are read at most this many pixels on a side, for display
+# LANDFIRE canopy cover / height / base height / bulk density: whole numbers, but measurements.
+MEASUREMENT_FILES = re.compile(r"_(CC|CH|CBH|CBD)\.tif$", re.IGNORECASE)
+
+
+class TifStack(Stack):
+    """One GeoTIFF file: a layer per band, read at display size.
+
+    Class bands (whole numbers, few values: LANDFIRE fuel models, land cover)
+    get a legend; FBFM40 files get the Scott & Burgan fuel model names. Nodata
+    pixels are blank.
+    """
+
+    def __init__(self, path: Path, max_side: int = MAX_SIDE):
+        rasterio = _rasterio()
+        from rasterio.enums import Resampling
+
+        path = Path(path)
+        with rasterio.open(path) as src:
+            scale = max(src.height, src.width) / max_side
+            shape = (max(1, round(src.height / scale)), max(1, round(src.width / scale))) if scale > 1 else (
+                src.height, src.width)
+            data = src.read(out_shape=(src.count, *shape), resampling=Resampling.nearest, masked=True)
+            names = [d or f"band {i + 1}" for i, d in enumerate(src.descriptions)]
+            crs = src.crs.to_string() if src.crs else "no CRS"
+            res = src.res
+            size = (src.width, src.height)
+        self.bands = np.ma.filled(data.astype(np.float32), np.nan)
+        shown = f"; shown at {shape[1]} x {shape[0]}" if shape != (size[1], size[0]) else ""
+        unit = "°" if crs == "EPSG:4326" else " m" if "EPSG" in crs else ""
+        description = (f"{size[0]} x {size[1]} px, {len(names)} band{'s' if len(names) != 1 else ''}, {crs}, "
+                       f"pixel {res[0]:.6g}{unit}{shown}")
+        super().__init__(title=path.name, description=description)
+        palette = "fbfm40" if "fbfm40" in path.name.lower() else None
+        self._layers = []
+        for i, name in enumerate(names):
+            band = self.bands[i]
+            is_class = palette is not None or (not MEASUREMENT_FILES.search(path.name)
+                                               and looks_like_classes([band]))
+            self._layers.append(Layer(name, "Bands", CLASSES if is_class else VALUES, [""],
+                                      lambda _, b=band: b, palette=palette if is_class else None))
+
+    def layers(self, window: int = 0) -> List[Layer]:
+        return self._layers
+
+
+# ----- NetCDF -------------------------------------------------------------------
+
+
+def _xarray():
+    try:
+        import xarray
+
+        return xarray
+    except ImportError:
+        raise RuntimeError("NetCDF files need xarray. In Colab run: %pip install xarray netCDF4") from None
+
+
+def open_netcdf(path):
+    """Open a NetCDF file (classic or NetCDF4/HDF5) fully decoded and in memory."""
+    xr = _xarray()
+    try:
+        dataset = xr.open_dataset(path)
+    except ValueError as error:  # no engine for this flavour
+        raise RuntimeError(f"{error}. NetCDF4 files need the netCDF4 package; in Colab run: "
+                           "%pip install netCDF4") from None
+    try:
+        return dataset.load()
+    finally:
+        dataset.close()
+
+
+def _time_labels(values) -> List[str]:
+    times = np.asarray(values).astype("datetime64[m]")
+    if np.all(times == times.astype("datetime64[D]")):
+        return [str(t) for t in times.astype("datetime64[D]")]
+    return [str(t).replace("T", " ") for t in times]
+
+
+class NetcdfStack(Stack):
+    """A NetCDF file: a layer per gridded variable, a frame per step of its leading dimension.
+
+    The last two dimensions are the grid; a leading time dimension gives dated
+    frames (GRIDMET days, GOES and HRRR hours), any other leading dimensions are
+    stepped through as labelled frames. Grids are turned north up from their
+    latitudes. Variables holding codes (GOES Mask, DQF) are drawn as classes.
+    """
+
+    COORDINATE_NAMES = ("lat", "lon", "latitude", "longitude", "x", "y")
+
+    def __init__(self, path: Path):
+        path = Path(path)
+        ds = open_netcdf(path)
+        sizes = ", ".join(f"{k} {v}" for k, v in ds.sizes.items())
+        title = ds.attrs.get("title") or ""
+        super().__init__(title=path.name, description=f"{title + ' · ' if title else ''}{sizes}")
+        self.dataset = ds
+        self._layers = []
+        for name, var in ds.data_vars.items():
+            if name.lower() in self.COORDINATE_NAMES or var.ndim < 2 or not np.issubdtype(var.dtype, np.number):
+                continue
+            self._layers.append(self._layer(ds, name, var))
+        if not self._layers:
+            raise ValueError(f"{path.name} has no gridded numeric variables "
+                             f"(variables: {', '.join(ds.data_vars) or 'none'})")
+
+    @staticmethod
+    def _north_down(ds, var) -> bool:
+        """True when the grid's first row is its southern edge (so it must be flipped)."""
+        ydim, xdim = var.dims[-2:]
+        for name in ("lat", "latitude"):
+            if name in ds.variables:
+                lat = np.asarray(ds[name])
+                if ds[name].dims == (ydim,) and lat.size > 1:
+                    return bool(lat[0] < lat[-1])
+                if ds[name].dims == (ydim, xdim) and lat.shape[0] > 1:
+                    return bool(np.nanmean(lat[0]) < np.nanmean(lat[-1]))
+        return False
+
+    def _layer(self, ds, name, var) -> Layer:
+        lead = var.dims[:-2]
+        values = np.asarray(var.values, dtype=np.float32)
+        frames = values.reshape((-1,) + values.shape[-2:])
+        if self._north_down(ds, var):
+            frames = frames[:, ::-1, :]
+        if len(lead) == 1 and lead[0] in ds.coords and np.issubdtype(ds[lead[0]].dtype, np.datetime64):
+            dates = _time_labels(ds[lead[0]].values)
+        elif lead:
+            index = np.stack(np.unravel_index(np.arange(len(frames)), values.shape[:-2]), axis=-1)
+            dates = [", ".join(f"{d} {int(i)}" for d, i in zip(lead, row)) for row in index]
+        else:
+            dates = [""]
+        units = str(var.attrs.get("units", ""))
+        units = "" if units in ("1", "-") else units  # dimensionless
+        label = f"{name} ({units})" if units else name
+        is_class = looks_like_classes(frames)
+        palette = None
+        if is_class and name in ("Mask", "DQF") and "FDC" in str(ds.attrs.get("title", "")):
+            palette = "goes_fdc" if name == "Mask" else "goes_fdc_dqf"
+        return Layer(label, "Variables", CLASSES if is_class else VALUES, dates,
+                     lambda i, f=frames: f[i], palette=palette, ramp="fire")
+
+    def layers(self, window: int = 0) -> List[Layer]:
+        return self._layers

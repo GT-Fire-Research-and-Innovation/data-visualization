@@ -42,6 +42,51 @@ PALETTES: Dict[str, Dict[int, Tuple[str, str]]] = {
         16: ("Barren", "#f9ffa4"), 17: ("Water", "#1c0dff"),
     },
 }
+
+# LANDFIRE FBFM40: the 40 Scott & Burgan (2005) fire behavior fuel models plus non-burnable codes.
+_FBFM40 = [
+    (91, "NB1 Urban / developed", "#9a9a9a"), (92, "NB2 Snow / ice", "#e3f2fd"), (93, "NB3 Agriculture", "#f1e0b5"),
+    (98, "NB8 Open water", "#4a90d9"), (99, "NB9 Bare ground", "#c9b99a"),
+    (101, "GR1 Short sparse dry grass", "#fff7c2"), (102, "GR2 Low load dry grass", "#fff09a"),
+    (103, "GR3 Low load coarse humid grass", "#ffe873"), (104, "GR4 Moderate load dry grass", "#ffdf4d"),
+    (105, "GR5 Low load humid grass", "#ffd633"), (106, "GR6 Moderate load humid grass", "#f5c400"),
+    (107, "GR7 High load dry grass", "#e6b400"), (108, "GR8 High load coarse humid grass", "#d1a000"),
+    (109, "GR9 Very high load humid grass", "#b88a00"),
+    (121, "GS1 Low load dry grass-shrub", "#e6ee9c"), (122, "GS2 Moderate load dry grass-shrub", "#d4e157"),
+    (123, "GS3 Moderate load humid grass-shrub", "#c0ca33"), (124, "GS4 High load humid grass-shrub", "#9e9d24"),
+    (141, "SH1 Low load dry shrub", "#ffccbc"), (142, "SH2 Moderate load dry shrub", "#ffab91"),
+    (143, "SH3 Moderate load humid shrub", "#ff8a65"), (144, "SH4 Low load humid timber-shrub", "#ff7043"),
+    (145, "SH5 High load dry shrub", "#f4511e"), (146, "SH6 Low load humid shrub", "#e64a19"),
+    (147, "SH7 Very high load dry shrub", "#d84315"), (148, "SH8 High load humid shrub", "#bf360c"),
+    (149, "SH9 Very high load humid shrub", "#8d2a0a"),
+    (161, "TU1 Low load dry timber-grass-shrub", "#a5d6a7"), (162, "TU2 Moderate load humid timber-shrub", "#81c784"),
+    (163, "TU3 Moderate load humid timber-grass-shrub", "#66bb6a"), (164, "TU4 Dwarf conifer with understory", "#43a047"),
+    (165, "TU5 Very high load dry timber-shrub", "#2e7d32"),
+    (181, "TL1 Low load compact conifer litter", "#b2dfdb"), (182, "TL2 Low load broadleaf litter", "#80cbc4"),
+    (183, "TL3 Moderate load conifer litter", "#4db6ac"), (184, "TL4 Small downed logs", "#26a69a"),
+    (185, "TL5 High load conifer litter", "#00897b"), (186, "TL6 Moderate load broadleaf litter", "#00796b"),
+    (187, "TL7 Large downed logs", "#00695c"), (188, "TL8 Long-needle litter", "#004d40"),
+    (189, "TL9 Very high load broadleaf litter", "#00332b"),
+    (201, "SB1 Low load activity fuel", "#e1bee7"), (202, "SB2 Moderate activity fuel / low blowdown", "#ba68c8"),
+    (203, "SB3 High activity fuel / moderate blowdown", "#8e24aa"), (204, "SB4 High load blowdown", "#5e1675"),
+]
+PALETTES["fbfm40"] = {code: (name, colour) for code, name, colour in _FBFM40}
+# GOES-R ABI fire product (FDC) Mask and its data quality flag.
+PALETTES["goes_fdc"] = {
+    10: ("Fire, good quality", "#8b1e3f"), 11: ("Fire, saturated", "#4a0d2a"), 12: ("Fire, cloud contaminated", "#d62828"),
+    13: ("Fire, high probability", "#f3722c"), 14: ("Fire, medium probability", "#ffa62b"),
+    15: ("Fire, low probability", "#ffe066"),
+    30: ("Filtered fire, good quality", "#b5546b"), 31: ("Filtered fire, saturated", "#7a3d55"),
+    32: ("Filtered fire, cloud contaminated", "#e67b7b"), 33: ("Filtered fire, high probability", "#f7a072"),
+    34: ("Filtered fire, medium probability", "#ffc879"), 35: ("Filtered fire, low probability", "#fff0a8"),
+    40: ("Space", "#1d1d1f"), 100: ("Processed, no fire", "#ececef"),
+}
+PALETTES["goes_fdc_dqf"] = {
+    0: ("Good fire pixel", "#d62828"), 1: ("Good fire-free land", "#ececef"), 2: ("Invalid: opaque cloud", "#9aa4b2"),
+    3: ("Invalid: surface type, sunglint or angle", "#c9b99a"), 4: ("Invalid: bad input data", "#6e6e73"),
+    5: ("Invalid: algorithm failure", "#1d1d1f"),
+}
+
 _SPARE = ["#8dd3c7", "#bebada", "#fb8072", "#80b1d3", "#fdb462", "#b3de69", "#fccde5",
           "#bc80bd", "#ccebc5", "#ffed6f", "#1f78b4", "#33a02c", "#e31a1c", "#ff7f00"]
 
@@ -113,6 +158,20 @@ def true_rgb(array: np.ndarray) -> np.ndarray:
     rgb = (scaled * 255).astype(np.uint8)
     rgb[~valid.all(axis=-1)] = MISSING
     return rgb
+
+
+def looks_like_classes(arrays, max_classes: int = 48) -> bool:
+    """Whether arrays hold class codes: whole numbers with few distinct values (fuel models, flags)."""
+    seen = set()
+    for array in arrays:
+        values = np.asarray(array, dtype=np.float64)
+        values = values[np.isfinite(values)]
+        if values.size and not np.array_equal(values, np.rint(values)):
+            return False
+        seen.update(np.unique(values).tolist())
+        if len(seen) > max_classes:
+            return False
+    return len(seen) > 1
 
 
 def classes_rgb(array: np.ndarray, palette: Optional[str] = None):

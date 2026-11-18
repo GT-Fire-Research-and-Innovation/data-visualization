@@ -109,8 +109,18 @@ class StackViewer:
         self._date.add_class("fx-date")
         nav = widgets.HBox([self._prev, self._date, self._next])
         nav.add_class("fx-nav")
+        # Long series (hourly GOES, HRRR) are dragged through rather than clicked.
+        self._slider = widgets.IntSlider(min=0, max=1, value=0, readout=False, continuous_update=False,
+                                         layout=widgets.Layout(width="100%"))
+        self._slider.add_class("fx-slider")
+        self._slider.observe(self._on_slider, "value")
+        self._syncing = False
+        self._about = widgets.HTML(f'<span class="fx-legend-note">{html.escape(stack.description)}</span>'
+                                   if stack.description else "")
+        self._about.add_class("fx-about")
+        self._about.layout.display = "" if stack.description else "none"
 
-        self.widget = widgets.VBox([controls, self._stage, self._legend, nav])
+        self.widget = widgets.VBox([controls, self._about, self._stage, self._legend, nav, self._slider])
         self.widget.add_class("fx-viewer")
         self.render()
 
@@ -133,6 +143,11 @@ class StackViewer:
         if self._layer_dd.value != index:
             self._layer_dd.value = index  # fires _on_layer, which renders
         else:
+            self.render()
+
+    def _on_slider(self, change) -> None:
+        if not self._syncing and change["new"] != self.frame:
+            self.frame = int(change["new"])
             self.render()
 
     def step(self, delta: int) -> None:
@@ -209,6 +224,15 @@ class StackViewer:
             self._prev.disabled = self.frame == 0
             self._next.disabled = self.frame >= layer.count - 1
         self._date.value = text
+        many = layer.count > 2 and not self.overlaid
+        self._slider.layout.display = "" if many else "none"
+        if many:
+            self._syncing = True
+            try:
+                self._slider.max = layer.count - 1
+                self._slider.value = self.frame
+            finally:
+                self._syncing = False
 
     def close(self) -> None:
         self.widget.close()

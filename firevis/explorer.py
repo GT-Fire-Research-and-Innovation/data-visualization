@@ -7,9 +7,10 @@ Every file and folder name loads when the explorer opens, so browsing needs no
 further requests. Clicking a folder opens it. Clicking a file opens it: the
 first time, it is downloaded into a local mirror of the Hub layout
 (`hf_mirror/<owner>/<dataset>/<path>`); later clicks use that saved copy. Text
-files (txt, json, md, csv, ...), PNG images and NumPy archives are shown in a
-preview pane inside the window. Other binary files are saved. Files over 1 GB
-ask first.
+files (txt, json, md, csv, csv.gz, ...), GeoJSON and OpenStreetMap maps, ZIP
+listings and PNG images are shown in a preview pane inside the window; NetCDF,
+GeoTIFF and NumPy archives open in its image viewer (firevis/viewers.py and
+firevis/stacks.py). Other binary files are saved. Files over 1 GB ask first.
 
 Functions registered with `explorer.on_file_click(fn)` run after that, with the
 file's `Entry`; anything they print or plot shows under the window.
@@ -25,7 +26,7 @@ import ipywidgets as widgets
 from IPython.display import display
 
 from . import viewers
-from .stacks import FireStack, NpzStack, is_fire_folder
+from .stacks import FireStack, NetcdfStack, NpzStack, TifStack, is_fire_folder
 from .viewer import StackViewer
 from .fire import npz_date_lookup
 from .hub import DATASET, DEFAULT_ROOT, FILE, FOLDER, ROOT, Entry, HubSource, Location
@@ -34,6 +35,12 @@ FileCallback = Callable[[Entry], None]
 
 # Extension -> (icon, kind label) for the Kind column.
 _FILE_KINDS = {
+    ".csv.gz": ("📊", "CSV table (gzip)"),
+    ".tsv.gz": ("📊", "TSV table (gzip)"),
+    ".geojson": ("🗺️", "GeoJSON map"),
+    ".osm.pbf": ("🗺️", "OpenStreetMap extract"),
+    ".pbf": ("🗺️", "Protobuf (OSM)"),
+    ".nc4": ("🌐", "NetCDF"),
     ".npz": ("🧮", "NumPy archive"),
     ".npy": ("🧮", "NumPy array"),
     ".tif": ("🖼️", "GeoTIFF image"),
@@ -61,7 +68,11 @@ def icon_and_kind(entry: Entry):
         return "🗂️", "Dataset"
     if entry.kind == FOLDER:
         return "📁", "Folder"
-    ext = os.path.splitext(entry.name)[1].lower()
+    name = entry.name.lower()
+    for compound in (".csv.gz", ".tsv.gz", ".osm.pbf"):
+        if name.endswith(compound):
+            return _FILE_KINDS[compound]
+    ext = os.path.splitext(name)[1]
     if ext in _FILE_KINDS:
         return _FILE_KINDS[ext]
     return "📄", f"{ext[1:].upper()} file" if ext else "File"
@@ -243,6 +254,15 @@ _CSS = """
 .fx-window .jupyter-button.fx-arrow:hover:enabled { background: var(--fx-hover) !important; }
 .fx-date { flex: 1 1 auto; text-align: center; }
 .fx-date .widget-html-content { justify-content: center; text-align: center; }
+.fx-slider { max-width: 560px; width: 100%; margin: 0 auto !important; }
+.fx-viewer-big .fx-slider { max-width: 960px; }
+.fx-about .widget-html-content { display: block; text-align: center; }
+
+/* maps (GeoJSON, OSM, tables with coordinates: firevis/viewers.py) */
+.fx-map { display: block; max-width: 100%; height: auto; margin: 6px auto; }
+.fx-map-head { margin: 2px 0 6px; font-size: 12px; line-height: 1.5; }
+.fx-map-legend { display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 6px 10px; margin: 4px 0 8px; font-size: 12px; color: var(--fx-muted); }
 .fx-card { margin: 40px 16px; text-align: center; font-size: 13px; line-height: 1.6; }
 .fx-note-error { color: #c4314b; }
 
@@ -399,8 +419,15 @@ class DatasetExplorer:
             self._show_preview(entry, body)
             return None
         try:
-            if path.suffix.lower() == ".npz":
+            kind = viewers.file_kind(path)
+            if kind == "numpy" and path.suffix.lower() == ".npz":
                 self._show_viewer(entry, NpzStack(path, dates=self._npz_dates(entry)))
+                return path
+            if kind == "netcdf":
+                self._show_viewer(entry, NetcdfStack(path))
+                return path
+            if kind == "geotiff":
+                self._show_viewer(entry, TifStack(path))
                 return path
             body = viewers.to_html(path)
         except Exception as error:  # unreadable file: say so instead of a blank pane
@@ -769,6 +796,7 @@ class DatasetExplorer:
         self._set_viewer(viewer)
         if viewer is None:
             self._preview_body.value = body or ""
+            self._fit_pane()
         self._ask_action = ask
         self._preview_ask.layout.display = "" if ask else "none"
         self._previewing = entry
@@ -792,8 +820,9 @@ class DatasetExplorer:
         self._fit_pane()
 
     def _fit_pane(self) -> None:
-        """Text keeps the list's height and scrolls; an image viewer gets the room it needs."""
-        grow = self._viewer is not None or "fx-preview-wide" in self._preview._dom_classes
+        """Text keeps the list's height and scrolls; an image viewer or a map gets the room it needs."""
+        has_map = self._viewer is None and 'class="fx-map"' in self._preview_body.value
+        grow = self._viewer is not None or has_map or "fx-preview-wide" in self._preview._dom_classes
         self._preview.layout.height = None if grow else self._pane_height
 
     def _entry_for(self, location: Location) -> Optional[Entry]:
